@@ -20,7 +20,7 @@ final class GameScene: SKScene {
     private var totalScore = 34030
     private var cash = 2553
 
-    // MARK: - State
+    // MARK: - Game state
 
     private var grid: Grid = []
     private var nodes: [[SKNode?]] = []
@@ -34,24 +34,33 @@ final class GameScene: SKScene {
     private var firstSelectionNode: SKNode?
     private var dragStartPoint: CGPoint?
     private var isResolving = false
+    private var cascadeDepth = 0
+
+    // +Moves booster: quantity selector state
+    private let quantityOptions: [Int] = [1, 5, 10, 25, 50]
+    private var movesQuantity: Int = 5
+    private let movesBuyCost: Int = 119
+    private weak var movesBoosterCircle: SKShapeNode?
+    private weak var movesQuantityBadge: SKShapeNode?
+    private weak var movesQuantityBadgeLabel: SKLabelNode?
+    private var quantityPopup: SKNode?
 
     private var score: Int = 0 { didSet { updateHUD() } }
     private var movesLeft: Int = 0 { didSet { updateHUD() } }
 
+    // Container for shake (we move this instead of self.position)
+    private var worldNode: SKNode!
+
     // HUD nodes
     private var headerCard: SKShapeNode!
     private var footerCard: SKShapeNode!
-
     private var livesLabel: SKLabelNode!
     private var levelLabel: SKLabelNode!
     private var goalLabel: SKLabelNode!
     private var totalLabel: SKLabelNode!
     private var movesValueLabel: SKLabelNode!
-    private var scoreSubLabel: SKLabelNode!
-
     private var progressFill: SKShapeNode!
     private var progressTrack: SKShapeNode!
-
     private var cashLabel: SKLabelNode!
 
     // MARK: - Lifecycle
@@ -63,6 +72,9 @@ final class GameScene: SKScene {
 
         safeTop = view.safeAreaInsets.top
         safeBottom = view.safeAreaInsets.bottom
+
+        worldNode = SKNode()
+        addChild(worldNode)
 
         buildHeaderCard()
         buildFooterCard()
@@ -86,6 +98,7 @@ final class GameScene: SKScene {
         footerCard?.removeFromParent()
         buildHeaderCard()
         buildFooterCard()
+        updateHUD()
     }
 
     private func buildHeaderCard() {
@@ -105,21 +118,24 @@ final class GameScene: SKScene {
         let leftX = -cardW / 2 + 18
         let rightX = cardW / 2 - 18
 
-        // Lives pill (top-left)
-        let pill = makePill(
-            width: 78,
-            height: 30,
-            fill: UIColor(red: 0.99, green: 0.36, blue: 0.51, alpha: 0.95),
-            stroke: .clear
-        )
-        pill.position = CGPoint(x: leftX + 39, y: cardH / 2 - 24)
+        // Lives pill (heart icon + 5/6)
+        let pillW: CGFloat = 84
+        let pill = makePill(width: pillW, height: 30,
+                            fill: UIColor(red: 0.99, green: 0.36, blue: 0.51, alpha: 0.95),
+                            stroke: .clear)
+        pill.position = CGPoint(x: leftX + pillW / 2, y: cardH / 2 - 24)
         card.addChild(pill)
 
-        let heart = SKLabelNode(text: "❤️")
-        heart.fontSize = 14
-        heart.verticalAlignmentMode = .center
-        heart.horizontalAlignmentMode = .center
-        heart.position = CGPoint(x: -22, y: 0)
+        // Subtle drop shadow under the lives pill
+        let pillShadow = SKShapeNode(rectOf: CGSize(width: pillW, height: 30), cornerRadius: 15)
+        pillShadow.fillColor = UIColor(white: 0, alpha: 0.18)
+        pillShadow.strokeColor = .clear
+        pillShadow.position = CGPoint(x: leftX + pillW / 2, y: cardH / 2 - 24 - 2)
+        pillShadow.zPosition = -1
+        card.addChild(pillShadow)
+
+        let heart = Icons.sprite(Icons.Name.life, size: 13, tint: .white)
+        heart.position = CGPoint(x: -pillW / 2 + 16, y: 0)
         pill.addChild(heart)
 
         let livesL = SKLabelNode(fontNamed: "AvenirNext-Bold")
@@ -127,15 +143,22 @@ final class GameScene: SKScene {
         livesL.fontColor = .white
         livesL.verticalAlignmentMode = .center
         livesL.horizontalAlignmentMode = .center
-        livesL.position = CGPoint(x: 8, y: 0)
+        livesL.position = CGPoint(x: 10, y: 0)
         pill.addChild(livesL)
         livesLabel = livesL
 
-        // Moves badge card (top-right)
+        // Moves badge card (with drop shadow)
         let movesBadgeW: CGFloat = 88
         let movesBadgeH: CGFloat = 64
+        let badgeShadow = SKShapeNode(rectOf: CGSize(width: movesBadgeW, height: movesBadgeH), cornerRadius: 14)
+        badgeShadow.fillColor = UIColor(white: 0, alpha: 0.18)
+        badgeShadow.strokeColor = .clear
+        badgeShadow.position = CGPoint(x: rightX - movesBadgeW / 2, y: cardH / 2 - movesBadgeH / 2 - 14 - 3)
+        badgeShadow.zPosition = -1
+        card.addChild(badgeShadow)
+
         let movesBadge = SKShapeNode(rectOf: CGSize(width: movesBadgeW, height: movesBadgeH), cornerRadius: 14)
-        movesBadge.fillColor = UIColor(white: 1, alpha: 0.92)
+        movesBadge.fillColor = UIColor(white: 1, alpha: 0.97)
         movesBadge.strokeColor = .clear
         movesBadge.position = CGPoint(x: rightX - movesBadgeW / 2, y: cardH / 2 - movesBadgeH / 2 - 14)
         card.addChild(movesBadge)
@@ -158,12 +181,9 @@ final class GameScene: SKScene {
         movesCap.position = CGPoint(x: 0, y: -14)
         movesBadge.addChild(movesCap)
 
-        // Level title row (left, below lives)
-        let bolt = SKLabelNode(text: "⚡️")
-        bolt.fontSize = 24
-        bolt.verticalAlignmentMode = .center
-        bolt.horizontalAlignmentMode = .left
-        bolt.position = CGPoint(x: leftX, y: 14)
+        // Level title (bolt icon + "Level N")
+        let bolt = Icons.sprite(Icons.Name.level, size: 22, tint: UIColor(hex: "#FACC15"))
+        bolt.position = CGPoint(x: leftX + 12, y: 14)
         card.addChild(bolt)
 
         let lvl = SKLabelNode(fontNamed: "AvenirNext-Heavy")
@@ -176,7 +196,7 @@ final class GameScene: SKScene {
         card.addChild(lvl)
         levelLabel = lvl
 
-        // Score + goal pill
+        // Score caption + goal pill
         let scoreCap = SKLabelNode(fontNamed: "AvenirNext-Medium")
         scoreCap.text = "Score"
         scoreCap.fontSize = 14
@@ -186,20 +206,14 @@ final class GameScene: SKScene {
         scoreCap.position = CGPoint(x: leftX, y: -22)
         card.addChild(scoreCap)
 
-        let goalPill = makePill(
-            width: 120,
-            height: 28,
-            fill: UIColor(white: 1, alpha: 0.85),
-            stroke: .clear
-        )
-        goalPill.position = CGPoint(x: leftX + 50 + 60, y: -22)
+        let goalPill = makePill(width: 130, height: 28,
+                                fill: UIColor(white: 1, alpha: 0.85),
+                                stroke: .clear)
+        goalPill.position = CGPoint(x: leftX + 50 + 65, y: -22)
         card.addChild(goalPill)
 
-        let target = SKLabelNode(text: "🎯")
-        target.fontSize = 14
-        target.verticalAlignmentMode = .center
-        target.horizontalAlignmentMode = .center
-        target.position = CGPoint(x: -40, y: 0)
+        let target = Icons.sprite(Icons.Name.goal, size: 14, tint: UIColor(hex: "#EF4444"))
+        target.position = CGPoint(x: -45, y: 0)
         goalPill.addChild(target)
 
         let gLabel = SKLabelNode(fontNamed: "AvenirNext-Bold")
@@ -211,7 +225,7 @@ final class GameScene: SKScene {
         goalPill.addChild(gLabel)
         goalLabel = gLabel
 
-        // Total (right side, below moves badge)
+        // Total
         let totalCap = SKLabelNode(fontNamed: "AvenirNext-Medium")
         totalCap.text = "Total"
         totalCap.fontSize = 14
@@ -230,16 +244,13 @@ final class GameScene: SKScene {
         card.addChild(totalNum)
         totalLabel = totalNum
 
-        // (intentionally no duplicate "Score 0" sub-label — score lives in the goal pill)
-        scoreSubLabel = SKLabelNode()
-
-        // Star progress bar across bottom of card
+        // Star progress bar
         let trackW = cardW - 36
         let trackH: CGFloat = 8
         let trackY: CGFloat = -cardH / 2 + 22
 
         let track = SKShapeNode(rectOf: CGSize(width: trackW, height: trackH), cornerRadius: trackH / 2)
-        track.fillColor = UIColor(white: 1, alpha: 0.1)
+        track.fillColor = UIColor(white: 1, alpha: 0.25)
         track.strokeColor = .clear
         track.position = CGPoint(x: 0, y: trackY)
         card.addChild(track)
@@ -253,20 +264,13 @@ final class GameScene: SKScene {
         card.addChild(fill)
         progressFill = fill
 
-        for (i, frac) in [0.33, 0.66, 1.0].enumerated() {
-            let star = SKLabelNode(text: "⭐️")
-            star.fontSize = 16
-            star.verticalAlignmentMode = .center
-            star.horizontalAlignmentMode = .center
+        for frac in [0.33, 0.66, 1.0] {
+            let star = Icons.sprite(Icons.Name.star, size: 16, tint: UIColor(hex: "#FACC15"))
             let x = -trackW / 2 + trackW * CGFloat(frac)
             star.position = CGPoint(x: x, y: trackY)
             star.zPosition = 1
-            star.alpha = 0.7
-            star.name = "star\(i)"
             card.addChild(star)
         }
-
-        updateHUD()
     }
 
     // MARK: - HUD: Footer Card
@@ -289,51 +293,65 @@ final class GameScene: SKScene {
         let leftX = -cardW / 2 + 18
         let rightX = cardW / 2 - 18
 
-        // Settings (gear)
-        let gear = makeIconCircle(symbol: "⚙︎", diameter: 42, fill: UIColor(white: 1, alpha: 0.85), iconColor: UIColor(hex: "#0F172A"))
+        // Settings (gear) — light circle, soft slate icon (less aggressive than black)
+        let slate = UIColor(hex: "#475569")
+        let gear = makeSymbolCircle(symbol: Icons.Name.settings, diameter: 44,
+                                    fill: UIColor(white: 1, alpha: 0.95),
+                                    iconTint: slate,
+                                    iconSize: 18,
+                                    weight: .medium)
         gear.position = CGPoint(x: leftX + 22, y: topRowY)
         gear.name = "settingsButton"
         card.addChild(gear)
 
-        // Cash pill (center)
-        let cashPill = makePill(
-            width: 130,
-            height: 36,
-            fill: UIColor(white: 1, alpha: 0.92),
-            stroke: .clear
-        )
+        // Cash pill (banknote + amount, with shadow)
+        let cashPillShadow = makePill(width: 150, height: 36,
+                                      fill: UIColor(white: 0, alpha: 0.18),
+                                      stroke: .clear)
+        cashPillShadow.position = CGPoint(x: 0, y: topRowY - 3)
+        cashPillShadow.zPosition = -1
+        card.addChild(cashPillShadow)
+
+        let cashPill = makePill(width: 150, height: 36,
+                                fill: UIColor(white: 1, alpha: 0.97),
+                                stroke: .clear)
         cashPill.position = CGPoint(x: 0, y: topRowY)
         card.addChild(cashPill)
 
-        let cashIcon = SKLabelNode(text: "💰")
-        cashIcon.fontSize = 16
-        cashIcon.verticalAlignmentMode = .center
-        cashIcon.horizontalAlignmentMode = .center
-        cashIcon.position = CGPoint(x: -38, y: 0)
+        let cashIcon = Icons.sprite(Icons.Name.cash, size: 17,
+                                    weight: .medium,
+                                    tint: UIColor(hex: "#475569"))
+        cashIcon.position = CGPoint(x: -45, y: 0)
         cashPill.addChild(cashIcon)
 
-        let cashL = SKLabelNode(fontNamed: "AvenirNext-Bold")
-        cashL.fontSize = 16
+        let cashL = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        cashL.fontSize = 17
         cashL.fontColor = UIColor(hex: "#0F172A")
         cashL.verticalAlignmentMode = .center
         cashL.horizontalAlignmentMode = .center
-        cashL.position = CGPoint(x: 8, y: 0)
+        cashL.position = CGPoint(x: 10, y: 0)
         cashPill.addChild(cashL)
         cashLabel = cashL
 
-        // Cart (right)
-        let cart = makeIconCircle(symbol: "🛒", diameter: 42, fill: UIColor(white: 1, alpha: 0.85), iconColor: UIColor(hex: "#0F172A"))
+        // Cart — light circle, soft slate icon
+        let cart = makeSymbolCircle(symbol: Icons.Name.cart, diameter: 44,
+                                    fill: UIColor(white: 1, alpha: 0.95),
+                                    iconTint: slate,
+                                    iconSize: 18,
+                                    weight: .medium)
         cart.position = CGPoint(x: rightX - 22, y: topRowY)
         cart.name = "cartButton"
         card.addChild(cart)
 
-        // Booster row — chips show 💰 price for paid items, plain count for owned (shuffle)
-        let boosters: [(symbol: String, label: String, fill: UIColor, chip: String, paid: Bool)] = [
-            ("🔨", "Hammer",  UIColor(hex: "#F97316"), "88",  true),
-            ("✋", "Swap",    UIColor(hex: "#FBBF24"), "130", true),
-            ("🔀", "Shuffle", UIColor(hex: "#60A5FA"), "2",   false),
-            ("⚡️", "+Moves",  UIColor(hex: "#F472B6"), "119", true),
-            ("❤️", "Life",    UIColor(hex: "#F472B6"), "152", true)
+        // Booster row — softer pastel fills, smaller / lighter icons
+        let boosters: [(symbol: String, label: String, fill: UIColor,
+                        iconSize: CGFloat, iconWeight: UIImage.SymbolWeight,
+                        iconTint: UIColor, chip: String, paid: Bool)] = [
+            (Icons.Name.hammer,     "Hammer",  UIColor(hex: "#FB923C"), 22, .medium,    .white,                       "88",  true),
+            (Icons.Name.swap,       "Swap",    UIColor(hex: "#FACC15"), 18, .regular,   UIColor(hex: "#1E293B"),      "130", true),
+            (Icons.Name.shuffle,    "Shuffle", UIColor(hex: "#7DD3FC"), 22, .semibold,  .white,                       "2",   false),
+            (Icons.Name.extraMoves, "+Moves",  UIColor(hex: "#F9A8D4"), 22, .heavy,     UIColor(hex: "#FACC15"),      "119", true),
+            (Icons.Name.life,       "Life",    UIColor(hex: "#F9A8D4"), 20, .heavy,     UIColor(hex: "#EF4444"),      "152", true)
         ]
 
         let cellW = (cardW - 24) / CGFloat(boosters.count)
@@ -343,36 +361,60 @@ final class GameScene: SKScene {
         for (i, b) in boosters.enumerated() {
             let cx = -cardW / 2 + 12 + cellW * (CGFloat(i) + 0.5)
 
+            // Drop shadow under circle
+            let shadow = SKShapeNode(circleOfRadius: circleD / 2)
+            shadow.fillColor = UIColor(white: 0, alpha: 0.18)
+            shadow.strokeColor = .clear
+            shadow.position = CGPoint(x: cx, y: rowY + 8)
+            shadow.zPosition = 1
+            card.addChild(shadow)
+
             let circle = SKShapeNode(circleOfRadius: circleD / 2)
             circle.fillColor = b.fill
             circle.strokeColor = .clear
             circle.position = CGPoint(x: cx, y: rowY + 12)
+            circle.zPosition = 2
+            if b.label == "+Moves" {
+                circle.name = "movesBoosterCircle"
+                movesBoosterCircle = circle
+            }
             card.addChild(circle)
 
-            let icon = SKLabelNode(text: b.symbol)
-            icon.fontSize = 24
-            icon.verticalAlignmentMode = .center
-            icon.horizontalAlignmentMode = .center
+            let icon = Icons.sprite(b.symbol, size: b.iconSize, weight: b.iconWeight, tint: b.iconTint)
             circle.addChild(icon)
 
-            // "+" badge
-            let badge = SKShapeNode(circleOfRadius: 9)
-            badge.fillColor = UIColor(hex: "#22C55E")
-            badge.strokeColor = UIColor(white: 0, alpha: 0.25)
-            badge.lineWidth = 1
-            badge.position = CGPoint(x: circleD / 2 - 4, y: circleD / 2 - 4)
-            circle.addChild(badge)
+            // Quantity badge — only on the +Moves booster. Shows currently selected
+            // quantity (e.g. "+5"); tapping opens the picker popup.
+            if b.label == "+Moves" {
+                let badgeW: CGFloat = 28
+                let badgeH: CGFloat = 18
+                let badge = SKShapeNode(rectOf: CGSize(width: badgeW, height: badgeH), cornerRadius: badgeH / 2)
+                badge.fillColor = UIColor(hex: "#22C55E")
+                badge.strokeColor = .white
+                badge.lineWidth = 1.2
+                badge.position = CGPoint(x: circleD / 2 - 2, y: circleD / 2 - 2)
+                badge.zPosition = 3
+                badge.name = "movesQuantityBadge"
+                circle.addChild(badge)
+                movesQuantityBadge = badge
 
-            let plus = SKLabelNode(fontNamed: "AvenirNext-Bold")
-            plus.text = "+"
-            plus.fontSize = 13
-            plus.fontColor = .white
-            plus.verticalAlignmentMode = .center
-            plus.horizontalAlignmentMode = .center
-            badge.addChild(plus)
+                badge.run(.repeatForever(.sequence([
+                    .scale(to: 1.12, duration: 0.7),
+                    .scale(to: 1.0, duration: 0.7)
+                ])))
 
-            // Chip below circle: dark pill with 💰+price (paid) or plain count (owned)
-            let chipW: CGFloat = b.paid ? 50 : 28
+                let badgeLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+                badgeLabel.text = "+\(movesQuantity)"
+                badgeLabel.fontSize = 11
+                badgeLabel.fontColor = .white
+                badgeLabel.verticalAlignmentMode = .center
+                badgeLabel.horizontalAlignmentMode = .center
+                badge.addChild(badgeLabel)
+                movesQuantityBadgeLabel = badgeLabel
+            }
+
+            // Chip below circle
+            let chipW: CGFloat = b.paid ? 54 : 30
             let chipH: CGFloat = 18
             let chip = SKShapeNode(rectOf: CGSize(width: chipW, height: chipH), cornerRadius: chipH / 2)
             chip.fillColor = b.paid ? UIColor(white: 0, alpha: 0.7) : UIColor(white: 1, alpha: 0.85)
@@ -381,11 +423,9 @@ final class GameScene: SKScene {
             card.addChild(chip)
 
             if b.paid {
-                let coin = SKLabelNode(text: "💰")
-                coin.fontSize = 9
-                coin.verticalAlignmentMode = .center
-                coin.horizontalAlignmentMode = .center
-                coin.position = CGPoint(x: -14, y: 0)
+                let coin = Icons.sprite(Icons.Name.cashFilled, size: 9,
+                                        tint: UIColor(hex: "#FACC15"))
+                coin.position = CGPoint(x: -16, y: 0)
                 chip.addChild(coin)
 
                 let chipL = SKLabelNode(fontNamed: "AvenirNext-Bold")
@@ -428,26 +468,22 @@ final class GameScene: SKScene {
         return pill
     }
 
-    private func makeIconCircle(symbol: String, diameter: CGFloat, fill: UIColor, iconColor: UIColor = .white) -> SKNode {
+    private func makeSymbolCircle(symbol: String, diameter: CGFloat, fill: UIColor,
+                                  iconTint: UIColor, iconSize: CGFloat,
+                                  weight: UIImage.SymbolWeight = .bold) -> SKNode {
         let node = SKNode()
         let bg = SKShapeNode(circleOfRadius: diameter / 2)
         bg.fillColor = fill
         bg.strokeColor = .clear
         node.addChild(bg)
-        let label = SKLabelNode(text: symbol)
-        label.fontName = "AvenirNext-DemiBold"
-        label.fontSize = 18
-        label.fontColor = iconColor
-        label.verticalAlignmentMode = .center
-        label.horizontalAlignmentMode = .center
-        node.addChild(label)
+        let icon = Icons.sprite(symbol, size: iconSize, weight: weight, tint: iconTint)
+        node.addChild(icon)
         return node
     }
 
     private func updateHUD() {
         movesValueLabel?.text = "\(movesLeft)"
         goalLabel?.text = "\(min(score, scoreTarget)) / \(scoreTarget)"
-        scoreSubLabel?.text = "Score \(score)"
         livesLabel?.text = "\(lives)/\(livesMax)"
         totalLabel?.text = "\(totalScore)"
         cashLabel?.text = "\(cash)"
@@ -478,13 +514,12 @@ final class GameScene: SKScene {
         let boardSide = tileSize * CGFloat(cols) + gap * CGFloat(cols + 1)
 
         let centerY = (headerBottom + footerTop) / 2
-
         boardOrigin = CGPoint(
             x: -boardSide / 2 + gap + tileSize / 2,
             y: centerY + boardSide / 2 - gap - tileSize / 2
         )
 
-        childNode(withName: "boardBackdrop")?.removeFromParent()
+        worldNode.childNode(withName: "boardBackdrop")?.removeFromParent()
         let bg = SKShapeNode(rectOf: CGSize(width: boardSide + 12, height: boardSide + 12), cornerRadius: 22)
         bg.name = "boardBackdrop"
         bg.position = CGPoint(x: 0, y: centerY)
@@ -492,13 +527,12 @@ final class GameScene: SKScene {
         bg.strokeColor = UIColor(white: 1, alpha: 0.08)
         bg.lineWidth = 1
         bg.zPosition = -10
-        addChild(bg)
+        worldNode.addChild(bg)
     }
 
     private func point(forRow r: Int, col c: Int) -> CGPoint {
-        let x = boardOrigin.x + CGFloat(c) * (tileSize + gap)
-        let y = boardOrigin.y - CGFloat(r) * (tileSize + gap)
-        return CGPoint(x: x, y: y)
+        CGPoint(x: boardOrigin.x + CGFloat(c) * (tileSize + gap),
+                y: boardOrigin.y - CGFloat(r) * (tileSize + gap))
     }
 
     private func cellAt(_ point: CGPoint) -> Pos? {
@@ -534,7 +568,7 @@ final class GameScene: SKScene {
                 guard let cell = grid[r][c] else { continue }
                 let node = makeTileNode(for: cell)
                 node.position = point(forRow: r, col: c)
-                addChild(node)
+                worldNode.addChild(node)
                 nodes[r][c] = node
             }
         }
@@ -566,6 +600,38 @@ final class GameScene: SKScene {
         guard let t = touches.first else { return }
         let p = t.location(in: self)
 
+        // 1. Quantity popup is open — handle option pick or dismiss
+        if let popup = quantityPopup {
+            let local = popup.convert(p, from: self)
+            for child in popup.children {
+                guard let name = child.name, name.hasPrefix("qty:"),
+                      child.contains(local) else { continue }
+                let qStr = String(name.dropFirst(4))
+                if let q = Int(qStr) { selectQuantity(q) }
+                hideQuantityPopup()
+                return
+            }
+            // tap outside popup → dismiss
+            hideQuantityPopup()
+            return
+        }
+
+        // 2. Tap on the +Moves quantity badge → open picker
+        var node: SKNode? = atPoint(p)
+        while let n = node {
+            if n.name == "movesQuantityBadge" {
+                showQuantityPopup()
+                Effects.haptic(.light)
+                return
+            }
+            if n.name == "movesBoosterCircle" {
+                buyMoves()
+                return
+            }
+            node = n.parent
+        }
+
+        // 3. Tile interaction
         guard !isResolving else { return }
         guard let pos = cellAt(p), grid[pos.r][pos.c] != nil else { return }
         dragStartPoint = p
@@ -584,6 +650,7 @@ final class GameScene: SKScene {
             }
         } else {
             select(pos)
+            Effects.haptic(.light)
         }
     }
 
@@ -645,6 +712,7 @@ final class GameScene: SKScene {
     private func attemptSwap(_ a: Pos, _ b: Pos) {
         guard !isResolving, movesLeft > 0 else { return }
         isResolving = true
+        cascadeDepth = 0
 
         let result = Engine.swapIfValid(grid, a, b)
         let nodeA = nodes[a.r][a.c]
@@ -658,11 +726,13 @@ final class GameScene: SKScene {
             nodes[a.r][a.c] = nodeB
             nodes[b.r][b.c] = nodeA
             movesLeft -= 1
+            Effects.haptic(.light)
             nodeA?.run(.move(to: posB, duration: dur))
             nodeB?.run(.move(to: posA, duration: dur)) { [weak self] in
                 self?.resolveCascade()
             }
         } else {
+            Effects.haptic(.soft)
             nodeA?.run(.sequence([.move(to: posB, duration: dur), .move(to: posA, duration: dur)]))
             nodeB?.run(.sequence([.move(to: posA, duration: dur), .move(to: posB, duration: dur)])) { [weak self] in
                 self?.isResolving = false
@@ -677,8 +747,25 @@ final class GameScene: SKScene {
             return
         }
 
+        cascadeDepth += 1
+        let depth = cascadeDepth
+        let cleared = matches.count
+        let multiplier = depth
+        let pointsPerTile = 10
+
+        // Compute centroid of cleared positions in scene coords
+        var sx: CGFloat = 0
+        var sy: CGFloat = 0
+        for p in matches {
+            let pt = point(forRow: p.r, col: p.c)
+            sx += pt.x
+            sy += pt.y
+        }
+        let centroid = CGPoint(x: sx / CGFloat(cleared), y: sy / CGFloat(cleared))
+
+        // Animate clear + spawn per-tile bursts
         let clearGroup = SKAction.group([
-            .scale(to: 1.2, duration: 0.08),
+            .scale(to: 1.25, duration: 0.08),
             .fadeOut(withDuration: 0.16)
         ])
 
@@ -687,10 +774,45 @@ final class GameScene: SKScene {
             if let n = nodes[p.r][p.c] {
                 nodesToRemove.append(n)
                 nodes[p.r][p.c] = nil
+
+                // Tile-color particle burst at this tile
+                let tint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
+                let burst = Effects.makeTileBurst(tint: tint)
+                burst.position = n.position
+                worldNode.addChild(burst)
+                burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
             }
         }
 
-        score += matches.count * 10
+        // Score popup at centroid
+        let added = cleared * pointsPerTile * multiplier
+        score += added
+        let popupColor: UIColor = depth >= 2 ? UIColor(hex: "#FACC15") : .white
+        Effects.showScorePopup(added, at: centroid, in: self, color: popupColor)
+
+        // Banner: combo (depth 2+) takes priority, else big-clear (4+ tiles)
+        if let combo = Effects.comboPhrase(forDepth: depth) {
+            Effects.showComboBanner(text: combo.text, color: combo.color, in: self)
+            Effects.notify(.success)
+        } else if let big = Effects.bigClearPhrase(forCount: cleared) {
+            Effects.showComboBanner(text: big.text, color: big.color, in: self)
+            Effects.haptic(.medium)
+        } else {
+            Effects.haptic(.medium)
+        }
+
+        // Confetti for big chains or massive single clears
+        if depth >= 3 || cleared >= 6 {
+            spawnConfetti()
+        }
+
+        // Screen shake for sizable clears
+        if cleared >= 4 || depth >= 2 {
+            Effects.shake(worldNode,
+                          intensity: cleared >= 6 ? 12 : 7,
+                          duration: 0.28)
+        }
+
         Engine.clearMatches(&grid, matches: matches)
 
         let removeAction = SKAction.sequence([clearGroup, .removeFromParent()])
@@ -699,6 +821,157 @@ final class GameScene: SKScene {
         run(.wait(forDuration: 0.18)) { [weak self] in
             self?.applyCollapseAndRefill()
         }
+    }
+
+    // MARK: - +Moves quantity selector
+
+    private func showQuantityPopup() {
+        hideQuantityPopup()
+        guard let circle = movesBoosterCircle else { return }
+
+        // Convert the circle's position into scene coords (it lives inside footerCard)
+        let circleScenePos = circle.parent?.convert(circle.position, to: self) ?? circle.position
+
+        let popupW: CGFloat = 240
+        let popupH: CGFloat = 86
+        let popupY = circleScenePos.y + 78
+
+        let popup = SKNode()
+        popup.position = CGPoint(x: circleScenePos.x, y: popupY)
+        popup.zPosition = 1000
+        popup.alpha = 0
+        popup.setScale(0.4)
+
+        // Card background
+        let bg = SKShapeNode(rectOf: CGSize(width: popupW, height: popupH), cornerRadius: 16)
+        bg.fillColor = UIColor(white: 1, alpha: 0.97)
+        bg.strokeColor = UIColor(white: 0, alpha: 0.08)
+        bg.lineWidth = 1
+        bg.zPosition = 0
+        popup.addChild(bg)
+
+        // Drop shadow
+        let shadow = SKShapeNode(rectOf: CGSize(width: popupW, height: popupH), cornerRadius: 16)
+        shadow.fillColor = UIColor(white: 0, alpha: 0.18)
+        shadow.strokeColor = .clear
+        shadow.position = CGPoint(x: 0, y: -3)
+        shadow.zPosition = -1
+        popup.addChild(shadow)
+
+        // Title
+        let title = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+        title.text = "Buy moves"
+        title.fontSize = 11
+        title.fontColor = UIColor(hex: "#475569")
+        title.verticalAlignmentMode = .center
+        title.horizontalAlignmentMode = .center
+        title.position = CGPoint(x: 0, y: popupH / 2 - 16)
+        popup.addChild(title)
+
+        // Options as small dotted pills
+        let pillW: CGFloat = 36
+        let pillH: CGFloat = 30
+        let spacing: CGFloat = 8
+        let totalW = CGFloat(quantityOptions.count) * pillW + CGFloat(quantityOptions.count - 1) * spacing
+        var x = -totalW / 2 + pillW / 2
+
+        for opt in quantityOptions {
+            let isSelected = opt == movesQuantity
+            let pill = SKShapeNode(rectOf: CGSize(width: pillW, height: pillH), cornerRadius: 9)
+            pill.fillColor = isSelected ? UIColor(hex: "#F472B6") : UIColor(white: 0, alpha: 0.05)
+            pill.strokeColor = isSelected ? .clear : UIColor(white: 0, alpha: 0.12)
+            pill.lineWidth = 1
+            pill.position = CGPoint(x: x, y: -10)
+            pill.name = "qty:\(opt)"
+            popup.addChild(pill)
+
+            let l = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+            l.text = "\(opt)"
+            l.fontSize = 14
+            l.fontColor = isSelected ? .white : UIColor(hex: "#0F172A")
+            l.verticalAlignmentMode = .center
+            l.horizontalAlignmentMode = .center
+            pill.addChild(l)
+
+            x += pillW + spacing
+        }
+
+        // Pointer (small triangle pointing down at the badge) — drawn as a rotated square
+        let pointer = SKShapeNode(rectOf: CGSize(width: 14, height: 14), cornerRadius: 2)
+        pointer.fillColor = UIColor(white: 1, alpha: 0.97)
+        pointer.strokeColor = .clear
+        pointer.position = CGPoint(x: 0, y: -popupH / 2 + 4)
+        pointer.zRotation = .pi / 4
+        pointer.zPosition = -1
+        popup.addChild(pointer)
+
+        addChild(popup)
+        quantityPopup = popup
+
+        popup.run(.group([
+            .scale(to: 1.0, duration: 0.18),
+            .fadeIn(withDuration: 0.12)
+        ]))
+    }
+
+    private func hideQuantityPopup() {
+        guard let popup = quantityPopup else { return }
+        quantityPopup = nil
+        popup.run(.sequence([
+            .group([
+                .scale(to: 0.4, duration: 0.12),
+                .fadeOut(withDuration: 0.12)
+            ]),
+            .removeFromParent()
+        ]))
+    }
+
+    private func selectQuantity(_ q: Int) {
+        movesQuantity = q
+        movesQuantityBadgeLabel?.text = "+\(q)"
+        // little pop on the badge to confirm the change
+        movesQuantityBadge?.run(.sequence([
+            .scale(to: 1.25, duration: 0.1),
+            .scale(to: 1.0, duration: 0.12)
+        ]))
+        Effects.haptic(.light)
+    }
+
+    private func buyMoves() {
+        guard cash >= movesBuyCost else {
+            Effects.haptic(.soft)
+            // Briefly shake the cash pill to signal "not enough"
+            if let pill = footerCard?.children.first(where: { ($0 as? SKShapeNode)?.fillColor == UIColor(white: 1, alpha: 0.97) }) {
+                Effects.shake(pill, intensity: 4, duration: 0.2)
+            }
+            return
+        }
+        cash -= movesBuyCost
+        movesLeft += movesQuantity
+        Effects.haptic(.medium)
+        Effects.notify(.success)
+
+        // Floating "+N moves" feedback above the booster
+        if let circle = movesBoosterCircle {
+            let pos = circle.parent?.convert(circle.position, to: self) ?? .zero
+            Effects.showScorePopup(movesQuantity,
+                                   at: CGPoint(x: pos.x, y: pos.y + 36),
+                                   in: self,
+                                   color: UIColor(hex: "#F472B6"))
+        }
+
+        // Bounce the booster circle
+        movesBoosterCircle?.run(.sequence([
+            .scale(to: 1.18, duration: 0.1),
+            .scale(to: 1.0, duration: 0.14)
+        ]))
+    }
+
+    private func spawnConfetti() {
+        let confetti = Effects.makeConfetti(width: size.width)
+        confetti.position = CGPoint(x: 0, y: size.height / 2 + 20)
+        addChild(confetti)
+        confetti.run(.sequence([.wait(forDuration: 2.6), .removeFromParent()]))
     }
 
     private func applyCollapseAndRefill() {
@@ -721,7 +994,7 @@ final class GameScene: SKScene {
                     let node = makeTileNode(for: cell)
                     let spawnY = size.height / 2 + tileSize
                     node.position = CGPoint(x: point(forRow: r, col: c).x, y: spawnY)
-                    addChild(node)
+                    worldNode.addChild(node)
                     node.run(.move(to: point(forRow: r, col: c), duration: fallDur))
                     newNodes[r][c] = node
                 }

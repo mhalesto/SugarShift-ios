@@ -1,0 +1,25 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# Swift Package Manager
+.build/
+Package.resolved
+.swiftpm/
+
+# CocoaPods
+Pods/
+*.xcworkspace
+
+# macOS
+.DS_Store
+
+# Misc
+*.log
+*.tmp

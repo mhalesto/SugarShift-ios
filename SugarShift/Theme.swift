@@ -1,4 +1,5 @@
 import UIKit
+import SpriteKit
 
 enum Theme {
     static let colors: [String] = [
@@ -26,6 +27,113 @@ enum Theme {
 
     static func emoji(forColor color: String) -> String {
         fruits[fruitIndex(forColor: color)]
+    }
+
+    // Cache of high-res emoji rasterizations. SKLabelNode emoji rendering is
+    // unreliable on some simulator builds; bake to a texture once and reuse.
+    private static var textureCache: [String: SKTexture] = [:]
+
+    static func emojiTexture(_ emoji: String) -> SKTexture {
+        // Map emoji back to its color and draw the gem so the splash + game share visuals.
+        let idx = fruits.firstIndex(of: emoji) ?? 0
+        return gemTexture(forColor: colors[idx % colors.count])
+    }
+
+    static func emojiTexture(forColor color: String) -> SKTexture {
+        gemTexture(forColor: color)
+    }
+
+    /// Draws a glossy candy/gem at high res for use as an SKSpriteNode texture.
+    /// Each color gets a unique highlight + rim treatment so they read as
+    /// distinct game pieces.
+    static func gemTexture(forColor color: String) -> SKTexture {
+        let key = "gem:\(color)"
+        if let hit = textureCache[key] { return hit }
+
+        let side: CGFloat = 256
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+        let img = renderer.image { ctx in
+            let cg = ctx.cgContext
+            let inset: CGFloat = 26
+            let rect = CGRect(x: inset, y: inset,
+                              width: side - inset * 2,
+                              height: side - inset * 2)
+            let base = UIColor(hex: color)
+
+            // Soft drop shadow
+            cg.saveGState()
+            cg.setShadow(offset: CGSize(width: 0, height: 8),
+                         blur: 16,
+                         color: UIColor(white: 0, alpha: 0.45).cgColor)
+            cg.setFillColor(base.cgColor)
+            cg.fillEllipse(in: rect)
+            cg.restoreGState()
+
+            // Radial gradient body — lighter center → base edge for sphere feel
+            cg.saveGState()
+            let path = UIBezierPath(ovalIn: rect)
+            path.addClip()
+            let cs = CGColorSpaceCreateDeviceRGB()
+            let lighter = base.lighter(by: 0.25)
+            let darker  = base.darker(by: 0.18)
+            let grad = CGGradient(colorsSpace: cs,
+                                   colors: [lighter.cgColor, base.cgColor, darker.cgColor] as CFArray,
+                                   locations: [0.0, 0.55, 1.0])!
+            cg.drawRadialGradient(grad,
+                                  startCenter: CGPoint(x: rect.midX - rect.width * 0.18,
+                                                       y: rect.midY - rect.height * 0.20),
+                                  startRadius: 0,
+                                  endCenter: CGPoint(x: rect.midX, y: rect.midY),
+                                  endRadius: rect.width * 0.65,
+                                  options: [])
+            cg.restoreGState()
+
+            // White top-left highlight (specular)
+            cg.saveGState()
+            let hi = CGRect(x: rect.minX + rect.width * 0.18,
+                            y: rect.minY + rect.height * 0.14,
+                            width: rect.width * 0.36,
+                            height: rect.height * 0.22)
+            cg.setFillColor(UIColor.white.withAlphaComponent(0.55).cgColor)
+            cg.fillEllipse(in: hi)
+            cg.restoreGState()
+
+            // Tiny dot accent for extra shine
+            cg.saveGState()
+            let dot = CGRect(x: rect.minX + rect.width * 0.62,
+                             y: rect.minY + rect.height * 0.20,
+                             width: rect.width * 0.10,
+                             height: rect.height * 0.10)
+            cg.setFillColor(UIColor.white.withAlphaComponent(0.7).cgColor)
+            cg.fillEllipse(in: dot)
+            cg.restoreGState()
+
+            // Inner rim stroke (thin darker ring)
+            cg.saveGState()
+            cg.setStrokeColor(UIColor(white: 0, alpha: 0.18).cgColor)
+            cg.setLineWidth(3)
+            cg.strokeEllipse(in: rect.insetBy(dx: 1.5, dy: 1.5))
+            cg.restoreGState()
+        }
+        let tex = SKTexture(image: img)
+        tex.filteringMode = .linear
+        textureCache[key] = tex
+        return tex
+    }
+}
+
+private extension UIColor {
+    func lighter(by f: CGFloat) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        return UIColor(red: min(1, r + f), green: min(1, g + f),
+                       blue: min(1, b + f), alpha: a)
+    }
+    func darker(by f: CGFloat) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        return UIColor(red: max(0, r - f), green: max(0, g - f),
+                       blue: max(0, b - f), alpha: a)
     }
 }
 

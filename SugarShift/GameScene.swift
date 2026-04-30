@@ -56,6 +56,10 @@ final class GameScene: SKScene {
     private var boosterCircles: [String: SKShapeNode] = [:]
     private var boosterHintLabel: SKLabelNode?
     private var shuffleCount = 2 { didSet { Persistence.shuffleCount = shuffleCount } }
+    private var hammerCount = 0 { didSet { Persistence.hammerCount = hammerCount } }
+    private var swapCount = 0   { didSet { Persistence.swapCount = swapCount } }
+    private var shopCard: ShopCard?
+    private var settingsCard: SettingsCard?
     private let hammerCost = 88
     private let swapCost = 130
     private let lifeCost = 152
@@ -106,12 +110,17 @@ final class GameScene: SKScene {
         totalScore    = Persistence.totalScore
         cash          = Persistence.cash
         shuffleCount  = Persistence.shuffleCount
+        hammerCount   = Persistence.hammerCount
+        swapCount     = Persistence.swapCount
         movesQuantity = Persistence.movesQuantity
         movesQuantityBadgeLabel?.text = "+\(movesQuantity)"
 
         updateHUD()
         layoutBoard()
         startNewGame()
+
+        // Kick off ambient music if it's enabled
+        Audio.shared.syncWithPreferences()
     }
 
     override func didChangeSize(_ oldSize: CGSize) {
@@ -792,10 +801,8 @@ final class GameScene: SKScene {
         body.name = "body"
         container.addChild(body)
 
-        let emoji = SKLabelNode(text: Theme.emoji(forColor: cell.color))
-        emoji.fontSize = tileSize * 0.7
-        emoji.verticalAlignmentMode = .center
-        emoji.horizontalAlignmentMode = .center
+        let emoji = SKSpriteNode(texture: Theme.emojiTexture(forColor: cell.color))
+        emoji.size = CGSize(width: tileSize * 0.78, height: tileSize * 0.78)
         emoji.name = "emoji"
         emoji.alpha = cell.blocker != nil ? 0.55 : 1.0
         container.addChild(emoji)
@@ -884,7 +891,19 @@ final class GameScene: SKScene {
             return
         }
 
-        // 0.5 Modal card (settings / shop) — tap outside dismisses
+        // 0.25 Shop card
+        if let card = shopCard {
+            _ = card.handleTap(at: p)
+            return
+        }
+
+        // 0.3 Settings card
+        if let card = settingsCard {
+            _ = card.handleTap(at: p)
+            return
+        }
+
+        // 0.5 Modal card (legacy stubs) — tap outside dismisses
         if let modal = modalCard {
             let local = modal.convert(p, from: self)
             var hit: SKNode? = modal.atPoint(local)
@@ -1045,12 +1064,14 @@ final class GameScene: SKScene {
             nodes[b.r][b.c] = nodeA
             movesLeft -= 1
             Effects.haptic(.light)
+            Audio.shared.play(.swapClick)
             nodeA?.run(.move(to: posB, duration: dur))
             nodeB?.run(.move(to: posA, duration: dur)) { [weak self] in
                 self?.resolveCascade()
             }
         } else {
             Effects.haptic(.soft)
+            Audio.shared.play(.swapInvalid)
             nodeA?.run(.sequence([.move(to: posB, duration: dur), .move(to: posA, duration: dur)]))
             nodeB?.run(.sequence([.move(to: posA, duration: dur), .move(to: posB, duration: dur)])) { [weak self] in
                 self?.isResolving = false
@@ -1128,11 +1149,14 @@ final class GameScene: SKScene {
         if let combo = Effects.comboPhrase(forDepth: depth) {
             Effects.showComboBanner(text: combo.text, color: combo.color, in: self)
             Effects.notify(.success)
+            Audio.shared.play(.combo(depth: depth))
         } else if let big = Effects.bigClearPhrase(forCount: cleared) {
             Effects.showComboBanner(text: big.text, color: big.color, in: self)
             Effects.haptic(.medium)
+            Audio.shared.play(.match)
         } else {
             Effects.haptic(.medium)
+            Audio.shared.play(.match)
         }
 
         // Confetti for big chains or massive single clears
@@ -1222,8 +1246,10 @@ final class GameScene: SKScene {
 
         if won {
             Effects.notify(.success)
+            Audio.shared.play(.win)
         } else {
             Effects.notify(.error)
+            Audio.shared.play(.lose)
         }
     }
 
@@ -1419,19 +1445,22 @@ final class GameScene: SKScene {
     }
 
     private func tryUseHammer() {
-        guard cash >= hammerCost else { insufficientCashFeedback(); return }
+        // Use a stocked hammer for free if you own one; otherwise pay cash.
+        if hammerCount == 0, cash < hammerCost { insufficientCashFeedback(); return }
         boosterMode = .hammer
-        showBoosterHint("Tap a fruit to smash!")
+        showBoosterHint(hammerCount > 0 ? "Tap a fruit to smash! (\(hammerCount) left)"
+                                         : "Tap a fruit to smash!")
         highlightActiveBooster("Hammer")
         Effects.haptic(.light)
     }
 
     private func tryUseSwap() {
-        guard cash >= swapCost else { insufficientCashFeedback(); return }
+        if swapCount == 0, cash < swapCost { insufficientCashFeedback(); return }
         boosterMode = .swap
         swapFirstPick = nil
         swapFirstNode = nil
-        showBoosterHint("Pick two fruits to swap")
+        showBoosterHint(swapCount > 0 ? "Pick two fruits (\(swapCount) left)"
+                                       : "Pick two fruits to swap")
         highlightActiveBooster("Swap")
         Effects.haptic(.light)
     }
@@ -1546,9 +1575,11 @@ final class GameScene: SKScene {
 
     private func performHammer(at pos: Pos) {
         guard let node = nodes[pos.r][pos.c] else { return }
-        cash -= hammerCost
+        // Spend a stocked hammer first; fall back to cash.
+        if hammerCount > 0 { hammerCount -= 1 } else { cash -= hammerCost }
         cancelBoosterMode()
         Effects.haptic(.heavy)
+        Audio.shared.play(.bomb)
 
         // Spawn explosion FX at the tile
         let tint = UIColor(hex: (node.userData?["color"] as? String) ?? "#FFFFFF")
@@ -1574,8 +1605,8 @@ final class GameScene: SKScene {
 
     private func performSwapPick(_ pos: Pos) {
         if let first = swapFirstPick {
-            // Force-swap regardless of validity
-            cash -= swapCost
+            // Force-swap regardless of validity. Stocked swap first; else cash.
+            if swapCount > 0 { swapCount -= 1 } else { cash -= swapCost }
             let nodeA = nodes[first.r][first.c]
             let nodeB = nodes[pos.r][pos.c]
             let posA = point(forRow: first.r, col: first.c)
@@ -1656,17 +1687,165 @@ final class GameScene: SKScene {
     // MARK: - Settings + Shop modals
 
     private func openSettings() {
-        showModal(title: "Settings",
-                  message: "Sound, music, haptics and a level reset live here.\n\nFull settings panel coming next.",
-                  primary: "Restart Level",
-                  primaryAction: { [weak self] in self?.resetLevel() })
+        settingsCard?.dismiss()
+        let card = SettingsCard(sceneSize: size)
+        card.position = .zero
+        addChild(card)
+        settingsCard = card
+
+        card.onAction = { [weak self] action in
+            guard let self = self else { return }
+            switch action {
+            case .close:
+                self.settingsCard?.dismiss()
+                self.settingsCard = nil
+            case .restartLevel:
+                self.settingsCard?.dismiss { [weak self] in
+                    self?.settingsCard = nil
+                    self?.resetLevel()
+                }
+            case .resetProgress:
+                self.settingsCard?.dismiss { [weak self] in
+                    self?.settingsCard = nil
+                    self?.performResetProgress()
+                }
+            }
+        }
+    }
+
+    /// Wipes saved progress (level, cash, lives, boosters) and restarts at level 1.
+    /// Preserves the user's settings toggles.
+    private func performResetProgress() {
+        Persistence.resetAll()
+        levelConfig = Levels.config(for: 1)
+        // Hydrate with defaults
+        lives         = Persistence.lives
+        totalScore    = Persistence.totalScore
+        cash          = Persistence.cash
+        shuffleCount  = Persistence.shuffleCount
+        hammerCount   = Persistence.hammerCount
+        swapCount     = Persistence.swapCount
+        movesQuantity = Persistence.movesQuantity
+        rebuildHUD()
+        layoutBoard()
+        startNewGame()
+        Effects.notify(.warning)
     }
 
     private func openShop() {
-        showModal(title: "Shop",
-                  message: "Buy cash packs, boosters and lives here.\n\nFull shop coming next — for now, enjoy what you've got.",
-                  primary: "OK",
-                  primaryAction: nil)
+        // Dismiss any existing card first
+        shopCard?.dismiss()
+        shopCard = nil
+
+        let pink   = UIColor(hex: "#F472B6")
+        let teal   = UIColor(hex: "#10B981")
+        let blue   = UIColor(hex: "#60A5FA")
+        let orange = UIColor(hex: "#F97316")
+        let yellow = UIColor(hex: "#FACC15")
+
+        let items: [ShopCard.Item] = [
+            .init(id: "ad100",
+                  emojiIcon: nil, symbolIcon: "play.fill",
+                  iconBg: teal, iconTint: .white,
+                  title: "Watch Ad",
+                  subtitle: "Free 100 coins",
+                  buttonText: "Watch",
+                  buttonColor: teal, buttonTextColor: .white,
+                  enabled: true),
+            .init(id: "lives3",
+                  emojiIcon: "❤️", symbolIcon: nil,
+                  iconBg: UIColor(hex: "#FBCFE8"), iconTint: .white,
+                  title: "+3 Lives",
+                  subtitle: "Refill on demand",
+                  buttonText: "💰 450",
+                  buttonColor: pink, buttonTextColor: .white,
+                  enabled: true),
+            .init(id: "shuffles5",
+                  emojiIcon: "🔀", symbolIcon: nil,
+                  iconBg: UIColor(hex: "#BAE6FD"), iconTint: .white,
+                  title: "+5 Shuffles",
+                  subtitle: "Reshuffle the board",
+                  buttonText: "💰 200",
+                  buttonColor: blue, buttonTextColor: .white,
+                  enabled: true),
+            .init(id: "hammers5",
+                  emojiIcon: "🔨", symbolIcon: nil,
+                  iconBg: UIColor(hex: "#FED7AA"), iconTint: .white,
+                  title: "+5 Hammers",
+                  subtitle: "Smash any tile",
+                  buttonText: "💰 400",
+                  buttonColor: orange, buttonTextColor: .white,
+                  enabled: true),
+            .init(id: "swaps5",
+                  emojiIcon: "✋", symbolIcon: nil,
+                  iconBg: UIColor(hex: "#FEF08A"), iconTint: .white,
+                  title: "+5 Swaps",
+                  subtitle: "Force-swap any two tiles",
+                  buttonText: "💰 600",
+                  buttonColor: yellow, buttonTextColor: UIColor(hex: "#0F172A"),
+                  enabled: true),
+            .init(id: "cashS",
+                  emojiIcon: "💰", symbolIcon: nil,
+                  iconBg: UIColor(hex: "#FEF3C7"), iconTint: .white,
+                  title: "Coin Pack — S",
+                  subtitle: "500 coins",
+                  buttonText: "$0.99",
+                  buttonColor: pink, buttonTextColor: .white,
+                  enabled: false),
+            .init(id: "cashL",
+                  emojiIcon: "💰", symbolIcon: nil,
+                  iconBg: UIColor(hex: "#FEF3C7"), iconTint: .white,
+                  title: "Coin Pack — L",
+                  subtitle: "5,000 coins",
+                  buttonText: "$9.99",
+                  buttonColor: pink, buttonTextColor: .white,
+                  enabled: false)
+        ]
+
+        let card = ShopCard(items: items, walletCash: cash, sceneSize: size)
+        card.position = .zero
+        card.alpha = 0
+        addChild(card)
+        card.run(.fadeIn(withDuration: 0.18))
+        shopCard = card
+
+        card.onBuy = { [weak self] id in self?.handleShopBuy(id) }
+        card.onClose = { [weak self] in
+            self?.shopCard?.dismiss()
+            self?.shopCard = nil
+        }
+    }
+
+    private func handleShopBuy(_ id: String) {
+        switch id {
+        case "ad100":
+            // Placeholder reward (no real ad SDK yet)
+            cash += 100
+            Effects.notify(.success)
+        case "lives3":
+            guard cash >= 450 else { insufficientCashFeedback(); return }
+            cash -= 450
+            lives = min(livesMax, lives + 3)
+            Effects.notify(.success)
+        case "shuffles5":
+            guard cash >= 200 else { insufficientCashFeedback(); return }
+            cash -= 200
+            shuffleCount += 5
+            Effects.notify(.success)
+        case "hammers5":
+            guard cash >= 400 else { insufficientCashFeedback(); return }
+            cash -= 400
+            hammerCount += 5
+            Effects.notify(.success)
+        case "swaps5":
+            guard cash >= 600 else { insufficientCashFeedback(); return }
+            cash -= 600
+            swapCount += 5
+            Effects.notify(.success)
+        default:
+            break
+        }
+        shopCard?.setWallet(cash)
     }
 
     private func showModal(title: String, message: String, primary: String, primaryAction: (() -> Void)?) {

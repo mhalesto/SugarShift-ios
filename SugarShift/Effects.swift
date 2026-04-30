@@ -194,11 +194,13 @@ enum Effects {
     // MARK: - Haptics
 
     static func haptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
+        guard Persistence.hapticsEnabled else { return }
         let g = UIImpactFeedbackGenerator(style: style)
         g.impactOccurred()
     }
 
     static func notify(_ type: UINotificationFeedbackGenerator.FeedbackType) {
+        guard Persistence.hapticsEnabled else { return }
         let g = UINotificationFeedbackGenerator()
         g.notificationOccurred(type)
     }

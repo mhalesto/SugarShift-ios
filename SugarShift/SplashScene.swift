@@ -156,10 +156,9 @@ final class SplashScene: SKScene {
 
     private func spawnFruit() {
         guard size.width > 100, size.height > 100 else { return }
-        let label = SKLabelNode(text: fruits.randomElement()!)
-        label.fontSize = CGFloat.random(in: 36...62)
-        label.verticalAlignmentMode = .center
-        label.horizontalAlignmentMode = .center
+        let fontSize = CGFloat.random(in: 36...62)
+        let label = SKSpriteNode(texture: Theme.emojiTexture(fruits.randomElement()!))
+        label.size = CGSize(width: fontSize * 1.3, height: fontSize * 1.3)
         label.zPosition = 5
         label.alpha = 0
 
@@ -197,7 +196,7 @@ final class SplashScene: SKScene {
             fall,
             .run { [weak self, weak label] in
                 guard let self = self, let label = label else { return }
-                self.smashFruit(at: label.position, fontSize: label.fontSize)
+                self.smashFruit(at: label.position, fontSize: fontSize)
                 label.removeFromParent()
             }
         ]))

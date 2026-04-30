@@ -33,14 +33,36 @@ enum Theme {
     // unreliable on some simulator builds; bake to a texture once and reuse.
     private static var textureCache: [String: SKTexture] = [:]
 
+    /// Emoji → bundled fruit imageset name. We pre-rendered each fruit on macOS
+    /// (where AppleColorEmoji works reliably) and shipped them as image assets
+    /// so iOS doesn't depend on its emoji font being available at runtime.
+    private static let imageNameByEmoji: [String: String] = [
+        "🍊": "fruit-orange",
+        "🍇": "fruit-grape",
+        "🫐": "fruit-blueberry",
+        "🍏": "fruit-apple",
+        "🍌": "fruit-banana",
+        "🍒": "fruit-cherry",
+        "🍓": "fruit-strawberry",
+        "🥭": "fruit-mango"
+    ]
+
     static func emojiTexture(_ emoji: String) -> SKTexture {
-        // Map emoji back to its color and draw the gem so the splash + game share visuals.
+        let key = "fruit:\(emoji)"
+        if let hit = textureCache[key] { return hit }
+        if let name = imageNameByEmoji[emoji], let img = UIImage(named: name) {
+            let tex = SKTexture(image: img)
+            tex.filteringMode = .linear
+            textureCache[key] = tex
+            return tex
+        }
+        // Fallback to a glossy gem if the bundled asset is missing.
         let idx = fruits.firstIndex(of: emoji) ?? 0
         return gemTexture(forColor: colors[idx % colors.count])
     }
 
     static func emojiTexture(forColor color: String) -> SKTexture {
-        gemTexture(forColor: color)
+        emojiTexture(emoji(forColor: color))
     }
 
     /// Draws a glossy candy/gem at high res for use as an SKSpriteNode texture.

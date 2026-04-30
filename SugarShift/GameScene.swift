@@ -14,11 +14,11 @@ final class GameScene: SKScene {
     private var movesAtStart: Int { levelConfig.moves }
     private var scoreTarget: Int { levelConfig.target }
 
-    // Placeholder economy state (UI only, not wired to gameplay)
-    private var lives = 5
+    // Persistent economy state — loaded from UserDefaults on scene init
     private let livesMax = 6
-    private var totalScore = 34030
-    private var cash = 2553
+    private var lives = 5            { didSet { Persistence.lives = lives;            updateHUD() } }
+    private var totalScore = 0       { didSet { Persistence.totalScore = totalScore;  updateHUD() } }
+    private var cash = 2553          { didSet { Persistence.cash = cash;              updateHUD() } }
 
     private var endLevelCard: EndLevelCard?
     private var levelEnded = false
@@ -41,12 +41,26 @@ final class GameScene: SKScene {
 
     // +Moves booster: quantity selector state
     private let quantityOptions: [Int] = [1, 5, 10, 25, 50]
-    private var movesQuantity: Int = 5
+    private var movesQuantity: Int = 5 { didSet { Persistence.movesQuantity = movesQuantity } }
     private let movesBuyCost: Int = 119
     private weak var movesBoosterCircle: SKShapeNode?
     private weak var movesQuantityBadge: SKShapeNode?
     private weak var movesQuantityBadgeLabel: SKLabelNode?
     private var quantityPopup: SKNode?
+
+    // Other booster state
+    private enum BoosterMode { case none, hammer, swap }
+    private var boosterMode: BoosterMode = .none
+    private var swapFirstPick: Pos?
+    private var swapFirstNode: SKNode?
+    private var boosterCircles: [String: SKShapeNode] = [:]
+    private var boosterHintLabel: SKLabelNode?
+    private var shuffleCount = 2 { didSet { Persistence.shuffleCount = shuffleCount } }
+    private let hammerCost = 88
+    private let swapCost = 130
+    private let lifeCost = 152
+    private var modalCard: SKNode?
+    private var modalPrimaryAction: (() -> Void)?
 
     private var score: Int = 0 { didSet { updateHUD() } }
     private var movesLeft: Int = 0 { didSet { updateHUD() } }
@@ -79,8 +93,22 @@ final class GameScene: SKScene {
         worldNode = SKNode()
         addChild(worldNode)
 
+        // Load persisted progress BEFORE building the HUD so the level number,
+        // skin, and counts all match what we left off on.
+        levelConfig = Levels.config(for: Persistence.currentLevel)
+
         buildHeaderCard()
         buildFooterCard()
+
+        // Now that the HUD nodes exist, hydrate the stored values via didSet —
+        // each assignment will run updateHUD() and refresh its label.
+        lives         = Persistence.lives
+        totalScore    = Persistence.totalScore
+        cash          = Persistence.cash
+        shuffleCount  = Persistence.shuffleCount
+        movesQuantity = Persistence.movesQuantity
+        movesQuantityBadgeLabel?.text = "+\(movesQuantity)"
+
         updateHUD()
         layoutBoard()
         startNewGame()
@@ -504,8 +532,9 @@ final class GameScene: SKScene {
             circle.strokeColor = .clear
             circle.position = CGPoint(x: cx, y: rowY + 12)
             circle.zPosition = 2
+            circle.name = "booster:\(b.label)"
+            boosterCircles[b.label] = circle
             if b.label == "+Moves" {
-                circle.name = "movesBoosterCircle"
                 movesBoosterCircle = circle
             }
             card.addChild(circle)
@@ -855,6 +884,25 @@ final class GameScene: SKScene {
             return
         }
 
+        // 0.5 Modal card (settings / shop) — tap outside dismisses
+        if let modal = modalCard {
+            let local = modal.convert(p, from: self)
+            var hit: SKNode? = modal.atPoint(local)
+            while let h = hit {
+                if h.name == "modalAction" {
+                    dismissModal()  // fires primary action
+                    return
+                }
+                if h.name == "modalClose" || h.name == "modalScrim" {
+                    modalPrimaryAction = nil
+                    dismissModal()
+                    return
+                }
+                hit = h.parent
+            }
+            return
+        }
+
         // 1. Quantity popup is open — handle option pick or dismiss
         if let popup = quantityPopup {
             let local = popup.convert(p, from: self)
@@ -871,7 +919,7 @@ final class GameScene: SKScene {
             return
         }
 
-        // 2. Tap on the +Moves quantity badge → open picker
+        // 2. Walk the node tree for HUD targets (booster / settings / cart / badge)
         var node: SKNode? = atPoint(p)
         while let n = node {
             if n.name == "movesQuantityBadge" {
@@ -879,11 +927,26 @@ final class GameScene: SKScene {
                 Effects.haptic(.light)
                 return
             }
-            if n.name == "movesBoosterCircle" {
-                buyMoves()
+            if n.name == "settingsButton" {
+                openSettings()
+                return
+            }
+            if n.name == "cartButton" {
+                openShop()
+                return
+            }
+            if let name = n.name, name.hasPrefix("booster:") {
+                let label = String(name.dropFirst("booster:".count))
+                handleBoosterTap(label)
                 return
             }
             node = n.parent
+        }
+
+        // 3. Booster mode active — next tile tap consumes it
+        if boosterMode != .none, let pos = cellAt(p), grid[pos.r][pos.c] != nil {
+            executeBoosterOnTile(pos)
+            return
         }
 
         // 3. Tile interaction
@@ -1125,6 +1188,11 @@ final class GameScene: SKScene {
             return 1
         }()
 
+        // Banked total score grows when you win — survives relaunches.
+        if won {
+            totalScore += score
+        }
+
         let outcome: EndLevelCard.Outcome = won
             ? .win(stars: stars, score: score, target: scoreTarget)
             : .lose(score: score, target: scoreTarget)
@@ -1167,6 +1235,7 @@ final class GameScene: SKScene {
         cascadeDepth = 0
         deselect()
         levelConfig = Levels.config(for: n)
+        Persistence.currentLevel = n
         rebuildHUD()
         layoutBoard()
         startNewGame()
@@ -1325,6 +1394,374 @@ final class GameScene: SKScene {
         movesBoosterCircle?.run(.sequence([
             .scale(to: 1.18, duration: 0.1),
             .scale(to: 1.0, duration: 0.14)
+        ]))
+    }
+
+    // MARK: - Booster handlers
+
+    private func handleBoosterTap(_ label: String) {
+        // If already in a mode and the same booster is tapped again, cancel.
+        if (label == "Hammer" && boosterMode == .hammer) ||
+           (label == "Swap"   && boosterMode == .swap) {
+            cancelBoosterMode()
+            return
+        }
+        cancelBoosterMode()
+
+        switch label {
+        case "Hammer":  tryUseHammer()
+        case "Swap":    tryUseSwap()
+        case "Shuffle": tryUseShuffle()
+        case "+Moves":  buyMoves()
+        case "Life":    tryUseLife()
+        default: break
+        }
+    }
+
+    private func tryUseHammer() {
+        guard cash >= hammerCost else { insufficientCashFeedback(); return }
+        boosterMode = .hammer
+        showBoosterHint("Tap a fruit to smash!")
+        highlightActiveBooster("Hammer")
+        Effects.haptic(.light)
+    }
+
+    private func tryUseSwap() {
+        guard cash >= swapCost else { insufficientCashFeedback(); return }
+        boosterMode = .swap
+        swapFirstPick = nil
+        swapFirstNode = nil
+        showBoosterHint("Pick two fruits to swap")
+        highlightActiveBooster("Swap")
+        Effects.haptic(.light)
+    }
+
+    private func tryUseShuffle() {
+        guard shuffleCount > 0 else {
+            insufficientCashFeedback()
+            return
+        }
+        shuffleCount -= 1
+        rebuildShuffleChip()
+        performShuffle()
+        Effects.haptic(.medium)
+        Effects.notify(.success)
+    }
+
+    private func tryUseLife() {
+        guard cash >= lifeCost else { insufficientCashFeedback(); return }
+        cash -= lifeCost
+        lives = min(livesMax, lives + 1)
+        Effects.haptic(.medium)
+        Effects.notify(.success)
+        if let circle = boosterCircles["Life"] {
+            let pos = circle.parent?.convert(circle.position, to: self) ?? .zero
+            Effects.showScorePopup(1,
+                                   at: CGPoint(x: pos.x, y: pos.y + 36),
+                                   in: self,
+                                   color: UIColor(hex: "#EF4444"))
+            circle.run(.sequence([.scale(to: 1.18, duration: 0.1), .scale(to: 1.0, duration: 0.14)]))
+        }
+        updateHUD()
+    }
+
+    // MARK: - Booster mode visuals
+
+    private func showBoosterHint(_ text: String) {
+        boosterHintLabel?.removeFromParent()
+        let label = SKLabelNode(fontNamed: "AvenirNext-Bold")
+        label.text = text
+        label.fontSize = 16
+        label.fontColor = .white
+        label.verticalAlignmentMode = .center
+        label.horizontalAlignmentMode = .center
+        label.zPosition = 600
+        label.alpha = 0
+        label.position = CGPoint(x: 0, y: 0)
+
+        let bg = SKShapeNode(rectOf: CGSize(width: 240, height: 36), cornerRadius: 18)
+        bg.fillColor = UIColor(white: 0, alpha: 0.7)
+        bg.strokeColor = UIColor.white.withAlphaComponent(0.5)
+        bg.lineWidth = 1
+        bg.zPosition = 599
+        bg.alpha = 0
+        bg.position = CGPoint(x: 0, y: 0)
+
+        addChild(bg)
+        addChild(label)
+        bg.run(.fadeIn(withDuration: 0.18))
+        label.run(.fadeIn(withDuration: 0.18))
+        boosterHintLabel = label
+        bg.name = "boosterHintBg"
+    }
+
+    private func hideBoosterHint() {
+        boosterHintLabel?.run(.sequence([.fadeOut(withDuration: 0.15), .removeFromParent()]))
+        boosterHintLabel = nil
+        childNode(withName: "boosterHintBg")?.run(.sequence([.fadeOut(withDuration: 0.15), .removeFromParent()]))
+    }
+
+    private func highlightActiveBooster(_ label: String) {
+        for (k, c) in boosterCircles {
+            c.removeAction(forKey: "boosterPulse")
+            c.setScale(1.0)
+            if k == label {
+                c.run(.repeatForever(.sequence([
+                    .scale(to: 1.15, duration: 0.4),
+                    .scale(to: 1.0, duration: 0.4)
+                ])), withKey: "boosterPulse")
+            }
+        }
+    }
+
+    private func cancelBoosterMode() {
+        boosterMode = .none
+        swapFirstPick = nil
+        if let n = swapFirstNode, let body = n.childNode(withName: "body") as? SKShapeNode {
+            body.removeAction(forKey: "swapPulse")
+            body.setScale(1.0)
+            body.strokeColor = skin.tileBorder
+            body.lineWidth = 1
+        }
+        swapFirstNode = nil
+        hideBoosterHint()
+        for c in boosterCircles.values {
+            c.removeAction(forKey: "boosterPulse")
+            c.setScale(1.0)
+        }
+    }
+
+    // MARK: - Booster execution on tile
+
+    private func executeBoosterOnTile(_ pos: Pos) {
+        switch boosterMode {
+        case .hammer:
+            performHammer(at: pos)
+        case .swap:
+            performSwapPick(pos)
+        case .none:
+            break
+        }
+    }
+
+    private func performHammer(at pos: Pos) {
+        guard let node = nodes[pos.r][pos.c] else { return }
+        cash -= hammerCost
+        cancelBoosterMode()
+        Effects.haptic(.heavy)
+
+        // Spawn explosion FX at the tile
+        let tint = UIColor(hex: (node.userData?["color"] as? String) ?? "#FFFFFF")
+        let burst = Effects.makeTileBurst(tint: tint)
+        burst.position = node.position
+        worldNode.addChild(burst)
+        burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
+
+        node.run(.sequence([
+            .group([.scale(to: 1.4, duration: 0.1), .fadeOut(withDuration: 0.18)]),
+            .removeFromParent()
+        ]))
+        nodes[pos.r][pos.c] = nil
+        grid[pos.r][pos.c] = nil
+
+        Effects.shake(worldNode, intensity: 6, duration: 0.18)
+
+        isResolving = true
+        run(.wait(forDuration: 0.2)) { [weak self] in
+            self?.applyCollapseAndRefill()
+        }
+    }
+
+    private func performSwapPick(_ pos: Pos) {
+        if let first = swapFirstPick {
+            // Force-swap regardless of validity
+            cash -= swapCost
+            let nodeA = nodes[first.r][first.c]
+            let nodeB = nodes[pos.r][pos.c]
+            let posA = point(forRow: first.r, col: first.c)
+            let posB = point(forRow: pos.r, col: pos.c)
+
+            // Swap in grid
+            let tmp = grid[first.r][first.c]
+            grid[first.r][first.c] = grid[pos.r][pos.c]
+            grid[pos.r][pos.c] = tmp
+            nodes[first.r][first.c] = nodeB
+            nodes[pos.r][pos.c] = nodeA
+
+            cancelBoosterMode()
+            isResolving = true
+            Effects.haptic(.medium)
+            nodeA?.run(.move(to: posB, duration: 0.2))
+            nodeB?.run(.move(to: posA, duration: 0.2)) { [weak self] in
+                self?.cascadeDepth = 0
+                self?.resolveCascade()
+            }
+        } else {
+            // First pick — highlight and wait for second
+            swapFirstPick = pos
+            swapFirstNode = nodes[pos.r][pos.c]
+            if let body = swapFirstNode?.childNode(withName: "body") as? SKShapeNode {
+                body.strokeColor = UIColor(hex: "#FACC15")
+                body.lineWidth = 4
+                body.run(.repeatForever(.sequence([
+                    .scale(to: 1.08, duration: 0.25),
+                    .scale(to: 1.0, duration: 0.25)
+                ])), withKey: "swapPulse")
+            }
+            Effects.haptic(.light)
+        }
+    }
+
+    private func performShuffle() {
+        var positions: [Pos] = []
+        var cells: [Cell] = []
+        for r in 0..<rows {
+            for c in 0..<cols {
+                if let cell = grid[r][c], cell.blocker == nil, cell.special == nil {
+                    positions.append(Pos(r: r, c: c))
+                    cells.append(cell)
+                }
+            }
+        }
+        cells.shuffle()
+        for (i, p) in positions.enumerated() {
+            let source = cells[i]
+            grid[p.r][p.c]?.color = source.color
+            grid[p.r][p.c]?.special = source.special
+            grid[p.r][p.c]?.kind = source.kind
+        }
+        rebuildAllNodes()
+    }
+
+    private func rebuildShuffleChip() {
+        // Rebuild the footer card so the shuffle chip count refreshes
+        rebuildHUD()
+        updateHUD()
+    }
+
+    private func insufficientCashFeedback() {
+        Effects.haptic(.soft)
+        Effects.notify(.warning)
+        // Brief shake of the cash pill
+        if let footer = footerCard {
+            for child in footer.children where child is SKShapeNode {
+                if let s = child as? SKShapeNode, s.frame.width > 100, s.frame.height < 50 {
+                    Effects.shake(s, intensity: 4, duration: 0.2)
+                    break
+                }
+            }
+        }
+    }
+
+    // MARK: - Settings + Shop modals
+
+    private func openSettings() {
+        showModal(title: "Settings",
+                  message: "Sound, music, haptics and a level reset live here.\n\nFull settings panel coming next.",
+                  primary: "Restart Level",
+                  primaryAction: { [weak self] in self?.resetLevel() })
+    }
+
+    private func openShop() {
+        showModal(title: "Shop",
+                  message: "Buy cash packs, boosters and lives here.\n\nFull shop coming next — for now, enjoy what you've got.",
+                  primary: "OK",
+                  primaryAction: nil)
+    }
+
+    private func showModal(title: String, message: String, primary: String, primaryAction: (() -> Void)?) {
+        dismissModal()
+
+        let scrim = SKShapeNode(rectOf: size)
+        scrim.fillColor = UIColor(white: 0, alpha: 0.55)
+        scrim.strokeColor = .clear
+        scrim.zPosition = 1500
+        scrim.alpha = 0
+        scrim.name = "modalScrim"
+
+        let cardW = min(size.width - 60, 320)
+        let cardH: CGFloat = 240
+        let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 22)
+        card.fillColor = UIColor(white: 1, alpha: 0.97)
+        card.strokeColor = UIColor.white.withAlphaComponent(0.6)
+        card.lineWidth = 1
+        card.zPosition = 1501
+        card.position = .zero
+        card.alpha = 0
+        card.setScale(0.7)
+
+        let titleL = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        titleL.text = title
+        titleL.fontSize = 24
+        titleL.fontColor = UIColor(hex: "#0F172A")
+        titleL.verticalAlignmentMode = .center
+        titleL.horizontalAlignmentMode = .center
+        titleL.position = CGPoint(x: 0, y: cardH / 2 - 36)
+        card.addChild(titleL)
+
+        // Multi-line message via two labels (simple)
+        let lines = message.components(separatedBy: "\n")
+        var y: CGFloat = cardH / 2 - 80
+        for line in lines {
+            let l = SKLabelNode(fontNamed: "AvenirNext-Medium")
+            l.text = line
+            l.fontSize = 13
+            l.fontColor = UIColor(hex: "#475569")
+            l.verticalAlignmentMode = .center
+            l.horizontalAlignmentMode = .center
+            l.position = CGPoint(x: 0, y: y)
+            card.addChild(l)
+            y -= 18
+        }
+
+        let btn = SKShapeNode(rectOf: CGSize(width: cardW - 56, height: 46), cornerRadius: 23)
+        btn.fillColor = UIColor(hex: "#F472B6")
+        btn.strokeColor = .clear
+        btn.position = CGPoint(x: 0, y: -cardH / 2 + 50)
+        btn.name = "modalAction"
+        let btnL = SKLabelNode(fontNamed: "AvenirNext-Bold")
+        btnL.text = primary
+        btnL.fontSize = 16
+        btnL.fontColor = .white
+        btnL.verticalAlignmentMode = .center
+        btnL.horizontalAlignmentMode = .center
+        btn.addChild(btnL)
+        card.addChild(btn)
+
+        let close = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+        close.text = "Close"
+        close.fontSize = 13
+        close.fontColor = UIColor(hex: "#475569")
+        close.verticalAlignmentMode = .center
+        close.horizontalAlignmentMode = .center
+        close.position = CGPoint(x: 0, y: -cardH / 2 + 18)
+        close.name = "modalClose"
+        card.addChild(close)
+
+        let container = SKNode()
+        container.zPosition = 1500
+        container.addChild(scrim)
+        container.addChild(card)
+        addChild(container)
+        modalCard = container
+        modalPrimaryAction = primaryAction
+
+        scrim.run(.fadeAlpha(to: 1.0, duration: 0.18))
+        card.run(.group([
+            .fadeIn(withDuration: 0.18),
+            .scale(to: 1.0, duration: 0.22)
+        ]))
+    }
+
+    private func dismissModal() {
+        guard let modal = modalCard else { return }
+        let action = modalPrimaryAction
+        modalCard = nil
+        modalPrimaryAction = nil
+        modal.run(.sequence([
+            .fadeOut(withDuration: 0.15),
+            .removeFromParent(),
+            .run { action?() }
         ]))
     }
 

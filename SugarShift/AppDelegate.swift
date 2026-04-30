@@ -8,9 +8,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
 
-        // Generate the app icon PNG into the simulator's Documents folder
-        // (DEBUG only). Path printed to console — drag it into AppIcon.appiconset.
-        IconRenderer.dumpIfNeeded()
+        // App icon is now shipped via Assets.xcassets — no runtime regen needed.
+        // To iterate the icon design, run:
+        //   swift /tmp/render_sugarshift_icon.swift
+        // …which overwrites Assets.xcassets/AppIcon.appiconset/AppIcon.png in place.
 
         let win = window ?? UIWindow(frame: UIScreen.main.bounds)
         win.rootViewController = SplashViewController()

@@ -807,7 +807,7 @@ final class GameScene: SKScene {
         emoji.alpha = cell.blocker != nil ? 0.55 : 1.0
         container.addChild(emoji)
 
-        // Ice overlay — translucent icy blue with frost border
+        // Ice overlay — translucent icy blue + snowflake symbol
         if let blocker = cell.blocker, blocker.type == .ice {
             let ice = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
                                   cornerRadius: tileSize * 0.22)
@@ -818,21 +818,21 @@ final class GameScene: SKScene {
             ice.zPosition = 4
             container.addChild(ice)
 
-            // Frost crystal accent
-            let frost = SKLabelNode(text: "❄︎")
-            frost.fontSize = tileSize * 0.42
-            frost.fontColor = UIColor.white.withAlphaComponent(0.9)
-            frost.verticalAlignmentMode = .center
-            frost.horizontalAlignmentMode = .center
+            let frost = Icons.sprite("snowflake",
+                                     size: tileSize * 0.42,
+                                     weight: .heavy,
+                                     tint: .white)
+            frost.alpha = 0.95
             frost.zPosition = 5
             container.addChild(frost)
             frost.run(.repeatForever(.sequence([
                 .fadeAlpha(to: 0.6, duration: 1.0),
-                .fadeAlpha(to: 1.0, duration: 1.0)
+                .fadeAlpha(to: 0.95, duration: 1.0)
             ])))
+            _ = blocker
         }
 
-        // Lock overlay — dark scrim with lock icon
+        // Lock overlay — dark scrim + SF Symbol lock
         if let blocker = cell.blocker, blocker.type == .lock {
             let scrim = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
                                     cornerRadius: tileSize * 0.22)
@@ -842,34 +842,70 @@ final class GameScene: SKScene {
             scrim.zPosition = 4
             container.addChild(scrim)
 
-            let lock = SKLabelNode(text: "🔒")
-            lock.fontSize = tileSize * 0.5
-            lock.verticalAlignmentMode = .center
-            lock.horizontalAlignmentMode = .center
+            let lock = Icons.sprite("lock.fill",
+                                    size: tileSize * 0.45,
+                                    weight: .heavy,
+                                    tint: UIColor(hex: "#FACC15"))
             lock.zPosition = 5
             container.addChild(lock)
+            _ = blocker
         }
 
-        // Bomb overlay — pulsing red glow + 💣 marker
+        // Bomb overlay — pulsing red glow + drawn bomb (black sphere + fuse spark)
         if cell.special == .bomb {
             let glow = SKShapeNode(circleOfRadius: tileSize * 0.42)
-            glow.fillColor = UIColor(hex: "#EF4444").withAlphaComponent(0.35)
+            glow.fillColor = UIColor(hex: "#EF4444").withAlphaComponent(0.4)
             glow.strokeColor = .clear
             glow.glowWidth = 6
             glow.blendMode = .add
             glow.zPosition = 1
             container.addChild(glow)
             glow.run(.repeatForever(.sequence([
-                .scale(to: 1.15, duration: 0.5),
+                .scale(to: 1.18, duration: 0.5),
                 .scale(to: 1.0, duration: 0.5)
             ])))
 
-            let bombMark = SKLabelNode(text: "💣")
-            bombMark.fontSize = tileSize * 0.45
-            bombMark.position = CGPoint(x: tileSize * 0.22, y: tileSize * 0.22)
-            bombMark.zPosition = 2
-            container.addChild(bombMark)
-            bombMark.run(.repeatForever(.sequence([
+            let bombGroup = SKNode()
+            bombGroup.zPosition = 2
+            bombGroup.position = CGPoint(x: 0, y: 0)
+            container.addChild(bombGroup)
+
+            // Bomb body — black sphere with subtle highlight
+            let bodyR = tileSize * 0.30
+            let body = SKShapeNode(circleOfRadius: bodyR)
+            body.fillColor = UIColor(hex: "#0F172A")
+            body.strokeColor = UIColor(white: 1, alpha: 0.15)
+            body.lineWidth = 1
+            bombGroup.addChild(body)
+            let bodyHi = SKShapeNode(circleOfRadius: bodyR * 0.32)
+            bodyHi.fillColor = UIColor.white.withAlphaComponent(0.4)
+            bodyHi.strokeColor = .clear
+            bodyHi.position = CGPoint(x: -bodyR * 0.35, y: bodyR * 0.40)
+            bombGroup.addChild(bodyHi)
+
+            // Fuse — short curved line (rotated rectangle)
+            let fuse = SKShapeNode(rectOf: CGSize(width: tileSize * 0.05, height: tileSize * 0.18),
+                                   cornerRadius: tileSize * 0.025)
+            fuse.fillColor = UIColor(hex: "#92400E")
+            fuse.strokeColor = .clear
+            fuse.position = CGPoint(x: bodyR * 0.55, y: bodyR * 0.92)
+            fuse.zRotation = -0.4
+            bombGroup.addChild(fuse)
+
+            // Fuse spark (yellow dot, twinkles)
+            let spark = SKShapeNode(circleOfRadius: tileSize * 0.05)
+            spark.fillColor = UIColor(hex: "#FBBF24")
+            spark.strokeColor = UIColor.white.withAlphaComponent(0.9)
+            spark.lineWidth = 1
+            spark.glowWidth = 4
+            spark.position = CGPoint(x: bodyR * 0.95, y: bodyR * 1.30)
+            bombGroup.addChild(spark)
+            spark.run(.repeatForever(.sequence([
+                .scale(to: 1.3, duration: 0.18),
+                .scale(to: 0.85, duration: 0.18)
+            ])))
+
+            bombGroup.run(.repeatForever(.sequence([
                 .moveBy(x: 0, y: 2, duration: 0.5),
                 .moveBy(x: 0, y: -2, duration: 0.5)
             ])))

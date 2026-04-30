@@ -31,13 +31,20 @@ enum Icons {
         static let chevronLeft = "chevron.left"
     }
 
-    /// Build a tinted SKSpriteNode from an SF Symbol. Returns nil if the symbol
-    /// isn't available on the running iOS version.
+    /// Build a tinted SKSpriteNode from an SF Symbol.
+    ///
+    /// Forces **monochrome** rendering so the `tint` is actually respected — many
+    /// symbols (banknote.fill, hammer.fill, hand.raised.fill, …) ship as
+    /// multicolor by default on iOS 16+, and `.alwaysOriginal` keeps that
+    /// multicolor data, ignoring your tint.
     static func sprite(_ symbol: String,
                        size: CGFloat,
                        weight: UIImage.SymbolWeight = .bold,
                        tint: UIColor = .white) -> SKSpriteNode {
-        let cfg = UIImage.SymbolConfiguration(pointSize: size, weight: weight)
+        var cfg = UIImage.SymbolConfiguration(pointSize: size, weight: weight)
+        if #available(iOS 16.0, *) {
+            cfg = cfg.applying(UIImage.SymbolConfiguration.preferringMonochrome())
+        }
         let base = UIImage(systemName: symbol, withConfiguration: cfg) ?? UIImage()
         let tinted = base.withTintColor(tint, renderingMode: .alwaysOriginal)
         let texture = SKTexture(image: tinted)

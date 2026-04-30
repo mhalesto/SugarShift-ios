@@ -28,6 +28,7 @@ struct Cell {
     var color: String
     var special: Special?
     var kind: CellKind
+    var blocker: Blocker? = nil
 }
 
 struct Pos: Hashable {
@@ -62,10 +63,19 @@ enum Engine {
     }
 
     static func findMatches(_ grid: Grid) -> Set<Pos> {
+        var out = Set<Pos>()
+        for group in findMatchGroups(grid) { out.formUnion(group) }
+        return out
+    }
+
+    /// Returns each contiguous match run as its own array of positions.
+    /// Lets callers detect run-length (4 → striped, 5+ → bomb/color-bomb).
+    static func findMatchGroups(_ grid: Grid) -> [[Pos]] {
         let rows = grid.count
         let cols = grid[0].count
-        var out = Set<Pos>()
+        var groups: [[Pos]] = []
 
+        // Horizontal runs
         for r in 0..<rows {
             var c = 0
             while c < cols {
@@ -74,11 +84,14 @@ enum Engine {
                 var k = c + 1
                 while k < cols, grid[r][k]?.color == color { k += 1 }
                 if k - c >= 3 {
-                    for x in c..<k { out.insert(Pos(r: r, c: x)) }
+                    var run: [Pos] = []
+                    for x in c..<k { run.append(Pos(r: r, c: x)) }
+                    groups.append(run)
                 }
                 c = k
             }
         }
+        // Vertical runs
         for c in 0..<cols {
             var r = 0
             while r < rows {
@@ -87,9 +100,46 @@ enum Engine {
                 var k = r + 1
                 while k < rows, grid[k][c]?.color == color { k += 1 }
                 if k - r >= 3 {
-                    for y in r..<k { out.insert(Pos(r: y, c: c)) }
+                    var run: [Pos] = []
+                    for y in r..<k { run.append(Pos(r: y, c: c)) }
+                    groups.append(run)
                 }
                 r = k
+            }
+        }
+        return groups
+    }
+
+    /// Walks every match position and, if the cell is special, expands the
+    /// cleared set with whatever the special triggers (3×3 for bomb, etc.).
+    static func expandMatchesWithSpecials(_ grid: Grid, _ matches: Set<Pos>) -> Set<Pos> {
+        let rows = grid.count, cols = grid[0].count
+        var out = matches
+        let add: (Int, Int) -> Void = { r, c in
+            if r >= 0, r < rows, c >= 0, c < cols { out.insert(Pos(r: r, c: c)) }
+        }
+        for p in matches {
+            guard let cell = grid[p.r][p.c], let sp = cell.special else { continue }
+            switch sp {
+            case .bomb:
+                for dr in -1...1 {
+                    for dc in -1...1 { add(p.r + dr, p.c + dc) }
+                }
+            case .stripedRow:
+                for c in 0..<cols { add(p.r, c) }
+            case .stripedCol:
+                for r in 0..<rows { add(r, p.c) }
+            case .wrapped:
+                for dr in -1...1 {
+                    for dc in -1...1 { add(p.r + dr, p.c + dc) }
+                }
+            case .colorBomb:
+                let target = cell.color
+                for r in 0..<rows {
+                    for c in 0..<cols {
+                        if grid[r][c]?.color == target { add(r, c) }
+                    }
+                }
             }
         }
         return out

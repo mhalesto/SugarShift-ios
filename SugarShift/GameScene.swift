@@ -2,23 +2,26 @@ import SpriteKit
 
 final class GameScene: SKScene {
 
-    // MARK: - Config
+    // MARK: - Config (driven by Levels catalog)
 
-    private let rows = 8
-    private let cols = 8
-    private let palette = Array(Theme.colors.prefix(6))
-    private let skin = BoardSkin.midnight
+    private var levelConfig: LevelConfig = Levels.config(for: 1)
+    private var rows: Int { levelConfig.rows }
+    private var cols: Int { levelConfig.cols }
+    private var palette: [String] { Array(Theme.colors.prefix(levelConfig.colors)) }
+    private var skin: BoardSkin { levelConfig.skin }
 
-    // Level params (placeholder until levels.ts is ported)
-    private let levelNumber = 1
-    private let movesAtStart = 21
-    private let scoreTarget = 2000
+    private var levelNumber: Int { levelConfig.number }
+    private var movesAtStart: Int { levelConfig.moves }
+    private var scoreTarget: Int { levelConfig.target }
 
     // Placeholder economy state (UI only, not wired to gameplay)
     private var lives = 5
     private let livesMax = 6
     private var totalScore = 34030
     private var cash = 2553
+
+    private var endLevelCard: EndLevelCard?
+    private var levelEnded = false
 
     // MARK: - Game state
 
@@ -264,13 +267,122 @@ final class GameScene: SKScene {
         card.addChild(fill)
         progressFill = fill
 
-        for frac in [0.33, 0.66, 1.0] {
-            let star = Icons.sprite(Icons.Name.star, size: 16, tint: UIColor(hex: "#FACC15"))
+        for (idx, frac) in [0.33, 0.66, 1.0].enumerated() {
+            let starNode = makeShinyStar(size: 22)
             let x = -trackW / 2 + trackW * CGFloat(frac)
-            star.position = CGPoint(x: x, y: trackY)
-            star.zPosition = 1
-            card.addChild(star)
+            starNode.position = CGPoint(x: x, y: trackY)
+            starNode.zPosition = 2
+            card.addChild(starNode)
+
+            // Stagger the pulse so the trio twinkles like a constellation
+            let phase = Double(idx) * 0.45
+            starNode.run(.sequence([.wait(forDuration: phase),
+                                    .repeatForever(.sequence([
+                                        .scale(to: 1.12, duration: 0.9),
+                                        .scale(to: 1.0,  duration: 0.9)
+                                    ]))]))
+
+            // Occasional sparkle burst (radial dots that grow + fade)
+            scheduleSparkle(on: starNode, delay: 1.5 + Double(idx) * 0.7)
         }
+    }
+
+    /// Builds a stack: glow halo → main gold star → subtle highlight → tiny sparkle layer.
+    private func makeShinyStar(size: CGFloat) -> SKNode {
+        let container = SKNode()
+
+        // Soft glow halo behind the star
+        let halo = SKShapeNode(circleOfRadius: size * 0.78)
+        halo.fillColor = UIColor(hex: "#FDE68A").withAlphaComponent(0.45)
+        halo.strokeColor = .clear
+        halo.glowWidth = 6
+        halo.zPosition = -2
+        halo.blendMode = .add
+        container.addChild(halo)
+        halo.run(.repeatForever(.sequence([
+            .group([.scale(to: 1.18, duration: 1.6),
+                    .fadeAlpha(to: 0.7, duration: 1.6)]),
+            .group([.scale(to: 1.0, duration: 1.6),
+                    .fadeAlpha(to: 0.4, duration: 1.6)])
+        ])))
+
+        // Main gold star
+        let star = SKShapeNode(path: starPath(size: size))
+        star.fillColor = UIColor(hex: "#FBBF24")        // warm gold
+        star.strokeColor = UIColor(hex: "#B45309")     // amber edge
+        star.lineWidth = 1
+        star.glowWidth = 0.5
+        star.zPosition = 0
+        container.addChild(star)
+
+        // Inner highlight — lighter gold, smaller, offset up-left for "lit from above" feel
+        let highlight = SKShapeNode(path: starPath(size: size * 0.55))
+        highlight.fillColor = UIColor(hex: "#FEF3C7").withAlphaComponent(0.85)
+        highlight.strokeColor = .clear
+        highlight.position = CGPoint(x: -size * 0.05, y: size * 0.06)
+        highlight.zPosition = 1
+        container.addChild(highlight)
+
+        return container
+    }
+
+    /// 5-pointed star path centered at origin.
+    private func starPath(size: CGFloat) -> CGPath {
+        let path = UIBezierPath()
+        let outer = size / 2
+        let inner = outer * 0.42
+        let points = 5
+        for i in 0..<(points * 2) {
+            let r = (i % 2 == 0) ? outer : inner
+            let theta = -CGFloat.pi / 2 + CGFloat(i) * (.pi / CGFloat(points))
+            let p = CGPoint(x: r * cos(theta), y: r * sin(theta))
+            if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+        }
+        path.close()
+        return path.cgPath
+    }
+
+    /// Periodic sparkle: a tiny white dot grows + fades around the star.
+    private func scheduleSparkle(on node: SKNode, delay: TimeInterval) {
+        let action = SKAction.run { [weak self, weak node] in
+            guard let self = self, let node = node else { return }
+            self.emitSparkle(on: node)
+        }
+        node.run(.sequence([
+            .wait(forDuration: delay),
+            .repeatForever(.sequence([
+                action,
+                .wait(forDuration: 2.0 + Double.random(in: 0...1.2))
+            ]))
+        ]))
+    }
+
+    private func emitSparkle(on node: SKNode) {
+        let r: CGFloat = 12
+        let theta = CGFloat.random(in: 0...(.pi * 2))
+        let dot = SKShapeNode(circleOfRadius: 1.6)
+        dot.fillColor = .white
+        dot.strokeColor = .clear
+        dot.glowWidth = 3
+        dot.blendMode = .add
+        dot.position = CGPoint(x: r * cos(theta) * 0.6,
+                               y: r * sin(theta) * 0.6)
+        dot.zPosition = 3
+        dot.alpha = 0
+        dot.setScale(0.3)
+        node.addChild(dot)
+
+        dot.run(.sequence([
+            .group([
+                .scale(to: 1.8, duration: 0.18),
+                .fadeAlpha(to: 1.0, duration: 0.1)
+            ]),
+            .group([
+                .scale(to: 0.2, duration: 0.4),
+                .fadeOut(withDuration: 0.4)
+            ]),
+            .removeFromParent()
+        ]))
     }
 
     // MARK: - HUD: Footer Card
@@ -304,28 +416,46 @@ final class GameScene: SKScene {
         gear.name = "settingsButton"
         card.addChild(gear)
 
-        // Cash pill (banknote + amount, with shadow)
-        let cashPillShadow = makePill(width: 150, height: 36,
-                                      fill: UIColor(white: 0, alpha: 0.18),
+        // Cash pill — gold-accented "wallet" with banknote + amount + shadow
+        let cashPillW: CGFloat = 168
+        let cashPillH: CGFloat = 40
+
+        let cashPillShadow = makePill(width: cashPillW, height: cashPillH,
+                                      fill: UIColor(white: 0, alpha: 0.2),
                                       stroke: .clear)
         cashPillShadow.position = CGPoint(x: 0, y: topRowY - 3)
         cashPillShadow.zPosition = -1
         card.addChild(cashPillShadow)
 
-        let cashPill = makePill(width: 150, height: 36,
+        let cashPill = makePill(width: cashPillW, height: cashPillH,
                                 fill: UIColor(white: 1, alpha: 0.97),
-                                stroke: .clear)
+                                stroke: UIColor(hex: "#FFD700").withAlphaComponent(0.55))
+        cashPill.lineWidth = 1.5
         cashPill.position = CGPoint(x: 0, y: topRowY)
         card.addChild(cashPill)
 
-        let cashIcon = Icons.sprite(Icons.Name.cash, size: 17,
-                                    weight: .medium,
-                                    tint: UIColor(hex: "#475569"))
-        cashIcon.position = CGPoint(x: -45, y: 0)
-        cashPill.addChild(cashIcon)
+        // Gold gradient inset (a thin lighter pill on top to fake a soft sheen)
+        let sheen = makePill(width: cashPillW - 4, height: cashPillH / 2,
+                             fill: UIColor(hex: "#FFFBEB").withAlphaComponent(0.55),
+                             stroke: .clear)
+        sheen.position = CGPoint(x: 0, y: cashPillH / 4 - 2)
+        cashPill.addChild(sheen)
+
+        // Coin icon (gold banknote, prominent)
+        let coinHalo = SKShapeNode(circleOfRadius: 14)
+        coinHalo.fillColor = UIColor(hex: "#FEF3C7")
+        coinHalo.strokeColor = UIColor(hex: "#FFD700").withAlphaComponent(0.5)
+        coinHalo.lineWidth = 1
+        coinHalo.position = CGPoint(x: -cashPillW / 2 + 22, y: 0)
+        cashPill.addChild(coinHalo)
+
+        let cashIcon = Icons.sprite(Icons.Name.cashFilled, size: 16,
+                                    weight: .heavy,
+                                    tint: UIColor(hex: "#D97706"))
+        coinHalo.addChild(cashIcon)
 
         let cashL = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        cashL.fontSize = 17
+        cashL.fontSize = 19
         cashL.fontColor = UIColor(hex: "#0F172A")
         cashL.verticalAlignmentMode = .center
         cashL.horizontalAlignmentMode = .center
@@ -423,10 +553,21 @@ final class GameScene: SKScene {
             card.addChild(chip)
 
             if b.paid {
-                let coin = Icons.sprite(Icons.Name.cashFilled, size: 9,
-                                        tint: UIColor(hex: "#FACC15"))
+                // Programmatic gold coin — bypass SF Symbol multicolor weirdness
+                let coin = SKShapeNode(circleOfRadius: 7)
+                coin.fillColor = UIColor(hex: "#FFD700")
+                coin.strokeColor = UIColor(hex: "#D97706")
+                coin.lineWidth = 1
                 coin.position = CGPoint(x: -16, y: 0)
                 chip.addChild(coin)
+
+                let dollar = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+                dollar.text = "$"
+                dollar.fontSize = 9
+                dollar.fontColor = UIColor(hex: "#7C2D12")
+                dollar.verticalAlignmentMode = .center
+                dollar.horizontalAlignmentMode = .center
+                coin.addChild(dollar)
 
                 let chipL = SKLabelNode(fontNamed: "AvenirNext-Bold")
                 chipL.text = b.chip
@@ -556,8 +697,47 @@ final class GameScene: SKScene {
     private func startNewGame() {
         score = 0
         movesLeft = movesAtStart
-        grid = Engine.createInitialGrid(rows: rows, cols: cols, colors: palette)
+        let layout = levelConfig.layout
+        grid = Engine.createInitialGrid(rows: rows, cols: cols, colors: palette, mask: layout.mask)
+        seedBlockers(layout: layout)
+        seedStartingBombs(layout: layout)
         rebuildAllNodes()
+    }
+
+    /// Randomly tag playable cells with ice / lock blockers so the level reads as harder.
+    private func seedBlockers(layout: LevelLayout) {
+        guard layout.iceCount > 0 || layout.lockCount > 0 else { return }
+        var candidates: [Pos] = []
+        for r in 0..<rows {
+            for c in 0..<cols where grid[r][c] != nil {
+                candidates.append(Pos(r: r, c: c))
+            }
+        }
+        candidates.shuffle()
+
+        // Ice
+        for p in candidates.prefix(layout.iceCount) {
+            grid[p.r][p.c]?.blocker = Blocker(type: .ice, hits: 2)
+        }
+        // Lock — start after the ice slice so they don't stack
+        let lockSlice = candidates.dropFirst(layout.iceCount).prefix(layout.lockCount)
+        for p in lockSlice {
+            grid[p.r][p.c]?.blocker = Blocker(type: .lock, hits: 1)
+        }
+    }
+
+    private func seedStartingBombs(layout: LevelLayout) {
+        guard layout.startingBombs > 0 else { return }
+        var candidates: [Pos] = []
+        for r in 0..<rows {
+            for c in 0..<cols where grid[r][c] != nil && grid[r][c]?.blocker == nil {
+                candidates.append(Pos(r: r, c: c))
+            }
+        }
+        candidates.shuffle()
+        for p in candidates.prefix(layout.startingBombs) {
+            grid[p.r][p.c]?.special = .bomb
+        }
     }
 
     private func rebuildAllNodes() {
@@ -588,7 +768,76 @@ final class GameScene: SKScene {
         emoji.verticalAlignmentMode = .center
         emoji.horizontalAlignmentMode = .center
         emoji.name = "emoji"
+        emoji.alpha = cell.blocker != nil ? 0.55 : 1.0
         container.addChild(emoji)
+
+        // Ice overlay — translucent icy blue with frost border
+        if let blocker = cell.blocker, blocker.type == .ice {
+            let ice = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
+                                  cornerRadius: tileSize * 0.22)
+            ice.fillColor = UIColor(hex: "#7DD3FC").withAlphaComponent(0.42)
+            ice.strokeColor = UIColor(hex: "#3B82F6").withAlphaComponent(0.5)
+            ice.lineWidth = 2
+            ice.glowWidth = 2
+            ice.zPosition = 4
+            container.addChild(ice)
+
+            // Frost crystal accent
+            let frost = SKLabelNode(text: "❄︎")
+            frost.fontSize = tileSize * 0.42
+            frost.fontColor = UIColor.white.withAlphaComponent(0.9)
+            frost.verticalAlignmentMode = .center
+            frost.horizontalAlignmentMode = .center
+            frost.zPosition = 5
+            container.addChild(frost)
+            frost.run(.repeatForever(.sequence([
+                .fadeAlpha(to: 0.6, duration: 1.0),
+                .fadeAlpha(to: 1.0, duration: 1.0)
+            ])))
+        }
+
+        // Lock overlay — dark scrim with lock icon
+        if let blocker = cell.blocker, blocker.type == .lock {
+            let scrim = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
+                                    cornerRadius: tileSize * 0.22)
+            scrim.fillColor = UIColor(white: 0, alpha: 0.45)
+            scrim.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.5)
+            scrim.lineWidth = 2
+            scrim.zPosition = 4
+            container.addChild(scrim)
+
+            let lock = SKLabelNode(text: "🔒")
+            lock.fontSize = tileSize * 0.5
+            lock.verticalAlignmentMode = .center
+            lock.horizontalAlignmentMode = .center
+            lock.zPosition = 5
+            container.addChild(lock)
+        }
+
+        // Bomb overlay — pulsing red glow + 💣 marker
+        if cell.special == .bomb {
+            let glow = SKShapeNode(circleOfRadius: tileSize * 0.42)
+            glow.fillColor = UIColor(hex: "#EF4444").withAlphaComponent(0.35)
+            glow.strokeColor = .clear
+            glow.glowWidth = 6
+            glow.blendMode = .add
+            glow.zPosition = 1
+            container.addChild(glow)
+            glow.run(.repeatForever(.sequence([
+                .scale(to: 1.15, duration: 0.5),
+                .scale(to: 1.0, duration: 0.5)
+            ])))
+
+            let bombMark = SKLabelNode(text: "💣")
+            bombMark.fontSize = tileSize * 0.45
+            bombMark.position = CGPoint(x: tileSize * 0.22, y: tileSize * 0.22)
+            bombMark.zPosition = 2
+            container.addChild(bombMark)
+            bombMark.run(.repeatForever(.sequence([
+                .moveBy(x: 0, y: 2, duration: 0.5),
+                .moveBy(x: 0, y: -2, duration: 0.5)
+            ])))
+        }
 
         container.userData = NSMutableDictionary(dictionary: ["color": cell.color])
         return container
@@ -599,6 +848,12 @@ final class GameScene: SKScene {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let t = touches.first else { return }
         let p = t.location(in: self)
+
+        // 0. End-level card takes precedence
+        if let card = endLevelCard {
+            _ = card.handleTap(at: p)
+            return
+        }
 
         // 1. Quantity popup is open — handle option pick or dismiss
         if let popup = quantityPopup {
@@ -741,14 +996,30 @@ final class GameScene: SKScene {
     }
 
     private func resolveCascade() {
-        let matches = Engine.findMatches(grid)
-        guard !matches.isEmpty else {
+        let groups = Engine.findMatchGroups(grid)
+        guard !groups.isEmpty else {
             isResolving = false
+            checkLevelEnd()
             return
         }
 
         cascadeDepth += 1
         let depth = cascadeDepth
+
+        // Build the full cleared set (groups + special detonations)
+        var matches = Set<Pos>()
+        for g in groups { matches.formUnion(g) }
+        matches = Engine.expandMatchesWithSpecials(grid, matches)
+
+        // Detect a 5+ run → bomb candidate (spawned at the run's centre after clear)
+        var bombSpawnPos: Pos? = nil
+        if let runLen = levelConfig.bombSpawnRunLength {
+            for g in groups where g.count >= runLen {
+                bombSpawnPos = g[g.count / 2]
+                break
+            }
+        }
+
         let cleared = matches.count
         let multiplier = depth
         let pointsPerTile = 10
@@ -815,12 +1086,102 @@ final class GameScene: SKScene {
 
         Engine.clearMatches(&grid, matches: matches)
 
+        // Spawn a bomb tile at the centre of any 5+ run
+        if let bp = bombSpawnPos {
+            // Re-pick a color from the run's neighbours (any will do; use palette[0] as fallback)
+            let color = palette.randomElement() ?? palette[0]
+            grid[bp.r][bp.c] = Cell(id: "bomb-\(Int.random(in: 0..<99999))",
+                                     color: color, special: .bomb, kind: .normal)
+        }
+
         let removeAction = SKAction.sequence([clearGroup, .removeFromParent()])
         for n in nodesToRemove { n.run(removeAction) }
 
         run(.wait(forDuration: 0.18)) { [weak self] in
             self?.applyCollapseAndRefill()
         }
+    }
+
+    // MARK: - Level end
+
+    private func checkLevelEnd() {
+        guard !levelEnded else { return }
+        if score >= scoreTarget {
+            endLevel(won: true)
+        } else if movesLeft <= 0 {
+            endLevel(won: false)
+        }
+    }
+
+    private func endLevel(won: Bool) {
+        levelEnded = true
+        isResolving = true
+
+        let stars: Int = {
+            guard won else { return 0 }
+            let t = levelConfig.starThresholds
+            if score >= t.three { return 3 }
+            if score >= t.two { return 2 }
+            return 1
+        }()
+
+        let outcome: EndLevelCard.Outcome = won
+            ? .win(stars: stars, score: score, target: scoreTarget)
+            : .lose(score: score, target: scoreTarget)
+
+        let card = EndLevelCard(outcome: outcome, sceneSize: size)
+        card.position = .zero
+        card.alpha = 0
+        card.setScale(0.7)
+        addChild(card)
+        card.run(.group([
+            .fadeIn(withDuration: 0.2),
+            .scale(to: 1.0, duration: 0.2)
+        ]))
+        endLevelCard = card
+
+        card.onPrimary = { [weak self] in
+            guard let self = self else { return }
+            if won, self.levelNumber < Levels.count {
+                self.advanceToLevel(self.levelNumber + 1)
+            } else {
+                self.resetLevel()
+            }
+        }
+        card.onSecondary = { [weak self] in
+            self?.resetLevel()
+        }
+
+        if won {
+            Effects.notify(.success)
+        } else {
+            Effects.notify(.error)
+        }
+    }
+
+    private func advanceToLevel(_ n: Int) {
+        endLevelCard?.dismiss()
+        endLevelCard = nil
+        levelEnded = false
+        isResolving = false
+        cascadeDepth = 0
+        deselect()
+        levelConfig = Levels.config(for: n)
+        rebuildHUD()
+        layoutBoard()
+        startNewGame()
+    }
+
+    private func resetLevel() {
+        endLevelCard?.dismiss()
+        endLevelCard = nil
+        levelEnded = false
+        isResolving = false
+        cascadeDepth = 0
+        deselect()
+        rebuildHUD()
+        layoutBoard()
+        startNewGame()
     }
 
     // MARK: - +Moves quantity selector
@@ -976,7 +1337,7 @@ final class GameScene: SKScene {
 
     private func applyCollapseAndRefill() {
         let oldGrid = grid
-        let newGrid = Engine.collapseAndRefill(grid, colors: palette)
+        let newGrid = Engine.collapseAndRefill(grid, colors: palette, mask: levelConfig.layout.mask)
         grid = newGrid
 
         var newNodes: [[SKNode?]] = Array(repeating: Array(repeating: nil, count: cols), count: rows)

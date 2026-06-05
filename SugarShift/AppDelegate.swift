@@ -3,20 +3,27 @@ import UIKit
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
 
-    var window: UIWindow?
-
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-
-        // App icon is now shipped via Assets.xcassets — no runtime regen needed.
-        // To iterate the icon design, run:
-        //   swift /tmp/render_sugarshift_icon.swift
-        // …which overwrites Assets.xcassets/AppIcon.appiconset/AppIcon.png in place.
-
-        let win = window ?? UIWindow(frame: UIScreen.main.bounds)
-        win.rootViewController = SplashViewController()
-        win.makeKeyAndVisible()
-        window = win
+        FirebaseBackendService.shared.configureIfAvailable()
+        Persistence.Cloud.start()
+        StoreKitService.shared.startTransactionListener()
+        Task { @MainActor in
+            await StoreKitService.shared.loadProducts()
+        }
+        GameCenterService.shared.authenticate()
+        PushService.shared.scheduleLifeRegenNotificationIfNeeded()
         return true
+    }
+
+    // MARK: - UIScene lifecycle
+
+    func application(_ application: UIApplication,
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let config = UISceneConfiguration(name: "Default Configuration",
+                                          sessionRole: connectingSceneSession.role)
+        config.delegateClass = SceneDelegate.self
+        return config
     }
 }

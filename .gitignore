@@ -13,6 +13,13 @@ DerivedData/
 Package.resolved
 .swiftpm/
 
+# Firebase Functions
+functions/node_modules/
+functions/lib/
+functions/.env
+functions/.env.*
+!functions/.env.example
+
 # CocoaPods
 Pods/
 *.xcworkspace

@@ -1,0 +1,51 @@
+{
+  "identifier" : "231B4323-3727-4D72-B71F-82F1F6B8F3C0",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "0.99",
+      "familyShareable" : false,
+      "internalID" : "501923FB-E2BA-4E23-B9F5-DE5BD3439F61",
+      "localizations" : [
+        {
+          "description" : "Add 500 coins to your wallet.",
+          "displayName" : "500 Coins",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.currenttech.SugarShift.coins.small",
+      "referenceName" : "500 Coins",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "4.99",
+      "familyShareable" : false,
+      "internalID" : "FE2AB527-1F73-4888-9B51-65660A084E37",
+      "localizations" : [
+        {
+          "description" : "Add 5,000 coins to your wallet.",
+          "displayName" : "5,000 Coins",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.currenttech.SugarShift.coins.large",
+      "referenceName" : "5000 Coins",
+      "type" : "Consumable"
+    }
+  ],
+  "settings" : {
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 2,
+    "minor" : 0,
+    "patch" : 0
+  }
+}

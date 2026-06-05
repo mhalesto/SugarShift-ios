@@ -95,9 +95,9 @@ final class SplashViewController: UIViewController {
         guard !hasTransitioned else { return }
         hasTransitioned = true
 
-        let game = GameViewController()
-        game.modalTransitionStyle = .crossDissolve
-        game.modalPresentationStyle = .fullScreen
+        let home = HomeViewController()
+        home.modalTransitionStyle = .crossDissolve
+        home.modalPresentationStyle = .fullScreen
 
         // Fade the splash content out gently before swapping
         UIView.animate(withDuration: 0.45, animations: {
@@ -105,13 +105,13 @@ final class SplashViewController: UIViewController {
         }, completion: { _ in
             // Replace the window's root rather than presenting modally — clean stack
             guard let window = self.view.window else {
-                self.present(game, animated: false)
+                self.present(home, animated: false)
                 return
             }
             UIView.transition(with: window, duration: 0.45,
                               options: [.transitionCrossDissolve],
                               animations: {
-                window.rootViewController = game
+                window.rootViewController = home
             })
         })
     }

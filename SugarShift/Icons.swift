@@ -13,6 +13,7 @@ enum Icons {
         // light and soft.
         static let life       = "heart.fill"        // sits inside pink lives pill / Life booster
         static let level      = "bolt.fill"         // bright yellow accent next to "Level N"
+        static let crown      = "crown.fill"        // appears above the Level label in crowned levels
         static let goal       = "scope"             // crosshair on the goal pill
         static let settings   = "gearshape"         // outlined gear
         static let cart       = "cart"              // outlined cart

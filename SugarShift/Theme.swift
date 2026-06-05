@@ -29,6 +29,17 @@ enum Theme {
         fruits[fruitIndex(forColor: color)]
     }
 
+    /// Human-readable fruit names parallel to `fruits`, used for VoiceOver
+    /// tile labels so the board is perceivable with the screen reader on.
+    static let fruitNames: [String] = [
+        "orange", "grape", "blueberry", "green apple",
+        "banana", "cherry", "strawberry", "mango"
+    ]
+
+    static func fruitName(forColor color: String) -> String {
+        fruitNames[fruitIndex(forColor: color)]
+    }
+
     // Cache of high-res emoji rasterizations. SKLabelNode emoji rendering is
     // unreliable on some simulator builds; bake to a texture once and reuse.
     private static var textureCache: [String: SKTexture] = [:]

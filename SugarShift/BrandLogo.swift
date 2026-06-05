@@ -72,7 +72,7 @@ enum BrandLogo {
         // ── Tagline
         if withTagline {
             let tagline = SKLabelNode(fontNamed: "AvenirNext-MediumItalic")
-            tagline.text = "sweet match magic"
+            tagline.text = String(localized: "sweet match magic")
             tagline.fontSize = fontSize * 0.32
             tagline.fontColor = UIColor.white.withAlphaComponent(0.85)
             tagline.verticalAlignmentMode = .center

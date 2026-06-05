@@ -9,12 +9,26 @@
 //   - Centered phone screenshot floating
 //
 //   Usage:
-//     swift /tmp/render_marketing.swift
+//     swift marketing/render_marketing.swift
 //
 import AppKit
 
-let inDir  = "/Users/halalisanimbanjwa/Documents/GitHub/ios/SugarShift/marketing/raw"
-let outDir = "/Users/halalisanimbanjwa/Documents/GitHub/ios/SugarShift/marketing"
+let scriptURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let inDir = scriptURL.appendingPathComponent("raw").path
+let outDir = scriptURL.path
+
+func raw(_ preferred: String, fallback: String? = nil) -> String {
+    let preferredPath = "\(inDir)/\(preferred)"
+    if FileManager.default.fileExists(atPath: preferredPath) { return preferred }
+    if let fallback {
+        let fallbackPath = "\(inDir)/\(fallback)"
+        if FileManager.default.fileExists(atPath: fallbackPath) {
+            print("Missing \(preferred); using \(fallback) until the level 100 screenshot is recaptured.")
+            return fallback
+        }
+    }
+    return preferred
+}
 
 struct ScreenSpec {
     let raw: String           // filename in raw/
@@ -44,7 +58,7 @@ let specs: [ScreenSpec] = [
           out: "marketing-01-splash.png",
           tag: "WELCOME",
           title: "Sweet Match\nMagic",
-          subtitle: "A dreamy match-3 puzzle\nwith 20 hand-crafted levels.",
+          subtitle: "A dreamy match-3 puzzle\nwith a 200-level campaign.",
           topColor:    c("#FBCFE8"),
           midColor:    c("#DDD6FE"),
           bottomColor: c("#A7F3D0"),
@@ -73,7 +87,7 @@ let specs: [ScreenSpec] = [
     .init(raw: "04-game-level7-donut.png",
           out: "marketing-04-shapes.png",
           tag: "EVERY LEVEL UNIQUE",
-          title: "20 Boards.\n20 Shapes.",
+          title: "200 Levels.\nFresh Boards.",
           subtitle: "Donuts, diamonds, hourglasses.\nEvery level looks new.",
           topColor:    c("#FB923C"),
           midColor:    c("#F97316"),
@@ -90,10 +104,10 @@ let specs: [ScreenSpec] = [
           bottomColor: c("#831843"),
           pillColor:   c("#DB2777")),
 
-    .init(raw: "06-game-level20-finale.png",
+    .init(raw: raw("06-game-level200-finale.png", fallback: "06-game-level100-finale.png"),
           out: "marketing-06-finale.png",
           tag: "THE SUGAR CROWN",
-          title: "Reach the\nFinale",
+          title: "Reach\nLevel 200",
           subtitle: "Bomb storms, locks, and ice\nstand between you and victory.",
           topColor:    c("#A5B4FC"),
           midColor:    c("#6366F1"),

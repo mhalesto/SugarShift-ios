@@ -10,9 +10,9 @@ iPhone 17 Pro Max display (**1320 × 2868**).
 | `marketing-01-splash.png`        | WELCOME             | Sweet Match Magic        | Splash screen |
 | `marketing-02-tap-and-match.png` | TAP & MATCH         | Match 3 or More          | Level 1 |
 | `marketing-03-frost-and-locks.png` | OBSTACLES         | Crack the Frost          | Level 5 (ice tiles) |
-| `marketing-04-shapes.png`        | EVERY LEVEL UNIQUE  | 20 Boards. 20 Shapes.    | Level 7 (donut shape) |
+| `marketing-04-shapes.png`        | EVERY LEVEL UNIQUE  | 200 Levels. Fresh Boards. | Level 7 (donut shape) |
 | `marketing-05-combos.png`        | BIG COMBOS          | Stack Combos for Mega Score | Level 13 (cross 9×9) |
-| `marketing-06-finale.png`        | THE SUGAR CROWN     | Reach the Finale         | Level 20 (boss board) |
+| `marketing-06-finale.png`        | THE SUGAR CROWN     | Reach Level 200          | Level 200 finale board |
 
 Each image has:
 - Diagonal pastel gradient background tuned per-screen (pink/teal/blue/orange/pink/indigo)
@@ -33,7 +33,7 @@ raw/
 ├── 03-game-level5-ice.png   (2,217 KB)
 ├── 04-game-level7-donut.png (2,219 KB)
 ├── 05-game-level13-cross.png (2,220 KB)
-└── 06-game-level20-finale.png (2,218 KB)
+└── 06-game-level200-finale.png (recapture after the 200-level expansion)
 ```
 
 These were captured on a booted **iPhone 17 Pro Max (iOS 26.3)** simulator using
@@ -70,17 +70,18 @@ shoot() {
 shoot "03-game-level5-ice.png"     5  4820  8450
 shoot "04-game-level7-donut.png"   7  5640  14820
 shoot "05-game-level13-cross.png"  13 7340  38200
-shoot "06-game-level20-finale.png" 20 12540 121300
+shoot "06-game-level200-finale.png" 200 12540 521300
 ```
 
 ### 2. Composite the marketing images
 
 ```bash
-swift /tmp/render_marketing.swift
+swift marketing/render_marketing.swift
 ```
 
-The script (`/tmp/render_marketing.swift`) lives outside the repo because it's
-host-only AppKit glue. Edit `specs[]` inside it to change tags/headlines/colors.
+Edit `specs[]` inside `marketing/render_marketing.swift` to change
+tags/headlines/colors. Until `raw/06-game-level200-finale.png` is captured,
+the renderer falls back to the old level 100 finale screenshot.
 
 ## Notes on visuals
 

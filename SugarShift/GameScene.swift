@@ -2,87 +2,244 @@ import SpriteKit
 
 final class GameScene: SKScene {
 
+    /// Set by GameViewController. Fired when the player taps "Choose level"
+    /// on the end-of-level card so the host VC can dismiss back to the map.
+    var onChooseLevel: (() -> Void)?
+    var initialLevel: Int?
+
     // MARK: - Config (driven by Levels catalog)
 
-    private var levelConfig: LevelConfig = Levels.config(for: 1)
-    private var rows: Int { levelConfig.rows }
-    private var cols: Int { levelConfig.cols }
-    private var palette: [String] { Array(Theme.colors.prefix(levelConfig.colors)) }
-    private var skin: BoardSkin { levelConfig.skin }
+    var levelConfig: LevelConfig = Levels.config(for: 1)
+    /// Probability that a refilled tile is forced to a colour that completes a
+    /// match, manufacturing cascades. High in early levels so the game feels
+    /// generous and cinematic, then ramps down as the campaign expects skill.
+    var cascadeBoostForLevel: Double {
+        let rangeBase: Double
+        switch levelNumber {
+        case 1...5:    rangeBase = 0.82
+        case 6...10:   rangeBase = 0.68
+        case 11...15:  rangeBase = 0.54
+        case 16...20:  rangeBase = 0.42
+        case 21...25:  rangeBase = 0.30
+        case 26...50:  rangeBase = 0.20
+        case 51...100: rangeBase = 0.15
+        case 101...150: rangeBase = 0.12
+        default:       rangeBase = 0.09
+        }
 
-    private var levelNumber: Int { levelConfig.number }
-    private var movesAtStart: Int { levelConfig.moves }
-    private var scoreTarget: Int { levelConfig.target }
+        let archetypeBoost: Double
+        switch levelConfig.archetype {
+        case .starter: archetypeBoost = 0.04
+        case .combo: archetypeBoost = 0.08
+        case .bombRush: archetypeBoost = 0.03
+        case .crowded: archetypeBoost = 0.02
+        case .ice, .lock, .finale: archetypeBoost = 0
+        }
+
+        let difficultyDrag: Double
+        switch levelConfig.difficulty {
+        case .normal: difficultyDrag = 0
+        case .hard: difficultyDrag = 0.03
+        case .superHard: difficultyDrag = 0.05
+        case .crownChallenge: difficultyDrag = 0.06
+        }
+
+        return min(0.86, max(0, rangeBase + archetypeBoost - difficultyDrag))
+    }
+
+    /// Boost only applies for the first few automatic cascades; after that we
+    /// refill with pure random colors so the chain has to terminate. Keeps
+    /// early levels punchy without spinning into an infinite combo loop.
+    var currentCascadeBoost: Double {
+        cascadeDepth < 6 ? cascadeBoostForLevel : 0
+    }
+    var specialBlastIsExpanded: Bool {
+        levelConfig.modifiers.contains(.specialsExplodeBigger)
+    }
+    var rows: Int { levelConfig.rows }
+    var cols: Int { levelConfig.cols }
+    var palette: [String] { Array(Theme.colors.prefix(levelConfig.colors)) }
+    var skin: BoardSkin { levelConfig.skin }
+
+    var levelNumber: Int { levelConfig.number }
+    var movesAtStart: Int { levelConfig.moves }
+    var scoreTarget: Int { levelConfig.target }
+    let scorePerUnusedMove = 100
+    /// Turns a detonated countdown fuse re-arms to.
+    let countdownFuseRearm = 5
 
     // Persistent economy state — loaded from UserDefaults on scene init
-    private let livesMax = 6
-    private var lives = 5            { didSet { Persistence.lives = lives;            updateHUD() } }
-    private var totalScore = 0       { didSet { Persistence.totalScore = totalScore;  updateHUD() } }
-    private var cash = 2553          { didSet { Persistence.cash = cash;              updateHUD() } }
+    let livesMax = Economy.livesMax
+    var lives = 5            { didSet { Persistence.lives = lives; PushService.shared.scheduleLifeRegenNotificationIfNeeded(); updateHUD() } }
+    var totalScore = 0       { didSet { Persistence.totalScore = totalScore;  updateHUD() } }
+    var cash = Economy.startingCash { didSet { Persistence.cash = cash;       updateHUD() } }
 
-    private var endLevelCard: EndLevelCard?
-    private var levelEnded = false
+    var endLevelCard: EndLevelCard?
+    var levelEnded = false
+    var pendingLifeLoss = false
+    var continueUsedThisAttempt = false
+    var coinPromptShownThisAttempt = false
+    var pendingDoubleRewards: [LevelReward] = []
+
+    struct CompletionRewardResult {
+        var general: [LevelReward] = []
+        var threeStar: LevelReward?
+        var daily: [LevelReward] = []
+        var event: [LevelReward] = []
+
+        var all: [LevelReward] {
+            general + [threeStar].compactMap { $0 } + daily + event
+        }
+    }
 
     // MARK: - Game state
 
-    private var grid: Grid = []
-    private var nodes: [[SKNode?]] = []
-    private var tileSize: CGFloat = 0
-    private var gap: CGFloat = 0
-    private var boardOrigin: CGPoint = .zero
-    private var safeTop: CGFloat = 0
-    private var safeBottom: CGFloat = 0
+    var grid: Grid = []
+    var nodes: [[SKNode?]] = []
+    var tileSize: CGFloat = 0
+    var gap: CGFloat = 0
+    var boardOrigin: CGPoint = .zero
+    var safeTop: CGFloat = 0
+    var safeBottom: CGFloat = 0
 
-    private var firstSelection: Pos?
-    private var firstSelectionNode: SKNode?
-    private var dragStartPoint: CGPoint?
-    private var isResolving = false
-    private var cascadeDepth = 0
+    var firstSelection: Pos?
+    var firstSelectionNode: SKNode?
+    var dragStartPoint: CGPoint?
+    var isResolving = false
+    var cascadeDepth = 0
+    var levelAttemptSeed = LevelSeed.make(level: 1)
+    var gameplayRNG = SeededRandomNumberGenerator(seed: LevelSeed.make(level: 1, salt: 0x51F7))
+    /// True when the player damaged a chocolate tile during the current turn.
+    /// Reset at the start of each swap; checked at the end of the cascade so
+    /// "adjacent matching" actually keeps the spread under control.
+    var chocolateDamagedThisTurn = false
+
+    // Idle-hint state — when the board sits idle for `idleHintDelay` seconds we
+    // pulse a valid swap to nudge the player.
+    let idleHintDelay: TimeInterval = 5.0
+    var hintRings: [SKNode] = []
+    var hintTiles: [SKNode] = []
+    var hintArrow: SKNode?
+    var hintShownThisLevel = 0
+    var freeStuckReshufflesThisLevel = 0
 
     // +Moves booster: quantity selector state
-    private let quantityOptions: [Int] = [1, 5, 10, 25, 50]
-    private var movesQuantity: Int = 5 { didSet { Persistence.movesQuantity = movesQuantity } }
-    private let movesBuyCost: Int = 119
-    private weak var movesBoosterCircle: SKShapeNode?
-    private weak var movesQuantityBadge: SKShapeNode?
-    private weak var movesQuantityBadgeLabel: SKLabelNode?
-    private var quantityPopup: SKNode?
+    let quantityOptions: [Int] = [1, 5, 10, 25, 50]
+    var movesQuantity: Int = 5 { didSet { Persistence.movesQuantity = movesQuantity } }
+    var movesBuyCost: Int { Economy.costForMoves(quantity: movesQuantity) }
+    weak var movesBoosterCircle: SKShapeNode?
+    weak var movesQuantityBadge: SKShapeNode?
+    weak var movesQuantityBadgeLabel: SKLabelNode?
+    var quantityPopup: SKNode?
 
     // Other booster state
-    private enum BoosterMode { case none, hammer, swap }
-    private var boosterMode: BoosterMode = .none
-    private var swapFirstPick: Pos?
-    private var swapFirstNode: SKNode?
-    private var boosterCircles: [String: SKShapeNode] = [:]
-    private var boosterHintLabel: SKLabelNode?
-    private var shuffleCount = 2 { didSet { Persistence.shuffleCount = shuffleCount } }
-    private var hammerCount = 0 { didSet { Persistence.hammerCount = hammerCount } }
-    private var swapCount = 0   { didSet { Persistence.swapCount = swapCount } }
-    private var shopCard: ShopCard?
-    private var settingsCard: SettingsCard?
-    private let hammerCost = 88
-    private let swapCost = 130
-    private let lifeCost = 152
-    private var modalCard: SKNode?
-    private var modalPrimaryAction: (() -> Void)?
+    enum BoosterMode { case none, hammer, swap }
+    var boosterMode: BoosterMode = .none
+    var swapFirstPick: Pos?
+    var swapFirstNode: SKNode?
+    var boosterCircles: [String: SKShapeNode] = [:]
+    var boosterHintLabel: SKLabelNode?
+    var shuffleCount = 2 { didSet { Persistence.shuffleCount = shuffleCount } }
+    var hammerCount = 0 { didSet { Persistence.hammerCount = hammerCount } }
+    var swapCount = 0   { didSet { Persistence.swapCount = swapCount } }
+    var shopCard: ShopCard?
+    var settingsCard: SettingsCard?
+    let hammerCost = Economy.hammerCost
+    let swapCost = Economy.swapCost
+    let lifeCost = Economy.lifeCost
+    var modalCard: SKNode?
+    var modalPrimaryAction: (() -> Void)?
+    var storeKitDeliveryObserver: NSObjectProtocol?
+    var storeKitProductObserver: NSObjectProtocol?
+    var levelTesterOverlay: SKNode?
+    var preLevelPerkOverlay: SKNode?
+    var preLevelPerkApplied = false
+    enum PreLevelPerk: String {
+        case bomb
+        case moves
+        case blockers
+    }
 
-    private var score: Int = 0 { didSet { updateHUD() } }
-    private var movesLeft: Int = 0 { didSet { updateHUD() } }
+    var score: Int = 0 { didSet { updateHUD() } }
+    var movesLeft: Int = 0 { didSet { updateHUD(); maybeLowMovesTension(old: oldValue) } }
+    var startingBlockers = 0 { didSet { updateHUD() } }
+    var collectedGoalTiles = 0 { didSet { updateHUD() } }
+    var createdSpecials = 0 { didSet { updateHUD() } }
+    var detonatedBombs = 0 { didSet { updateHUD() } }
+    var collectedIngredients = 0 { didSet { updateHUD() } }
+    var collectedKeys = 0 { didSet { updateHUD() } }
+    var openedChests = 0 { didSet { updateHUD() } }
+    var maxCascadeDepth = 0
+    var totalCascadeClears = 0
+    var objectiveCompletionShown = false
+
+    // MARK: - Mastery medals tracking
+    /// Flipped to true whenever the player spends a paid booster or burns a
+    /// stocked one during this attempt. Resets in `startNewGame()`.
+    var boosterUsedThisAttempt = false
+
+    // MARK: - Undo last move
+    /// One-move snapshot taken at the start of every player swap. Overwritten
+    /// on each new swap so only the most recent move is undoable.
+    struct UndoSnapshot {
+        let grid: Grid
+        let nodes: [[SKNode?]]
+        let score: Int
+        let movesLeft: Int
+        let collectedGoalTiles: Int
+        let createdSpecials: Int
+        let detonatedBombs: Int
+        let collectedIngredients: Int
+        let collectedKeys: Int
+        let openedChests: Int
+        let chocolateDamagedThisTurn: Bool
+        let syrupRow: Int
+        let syrupMovesSinceTick: Int
+        let sugarRushCharged: Bool
+    }
+    var undoSnapshot: UndoSnapshot?
+    var freeUndoUsedThisLevel = false
+    weak var undoButton: SKNode?
+    weak var undoBadge: SKLabelNode?
+
+    // MARK: - Combo meter (per-swap cascade chain)
+    /// Accumulated cleared tiles within the current chain — resets at the start
+    /// of every player swap. Drives the on-screen meter and milestone juice.
+    var chainTilesCleared = 0
+    var chainSpecialsTriggered = 0
+    var chainBlockersDamaged = 0
+    var lastChainTierFired = 0
+    var sugarRushCharged = false
+    weak var comboMeterFill: SKShapeNode?
+    weak var comboMeterTrack: SKShapeNode?
+    weak var comboMeterLabel: SKLabelNode?
+
+    // MARK: - Syrup line (rising pressure mechanic)
+    /// Row index of the next tile-row that will get coated when the syrup tick
+    /// fires. -1 means the level has no syrup mechanic.
+    var syrupRow: Int = -1
+    var syrupMovesSinceTick: Int = 0
+    weak var syrupBand: SKNode?
+
+    // MARK: - Pre-swap ghost preview
+    var ghostNodes: [SKNode] = []
+    var ghostTarget: Pos?
 
     // Container for shake (we move this instead of self.position)
-    private var worldNode: SKNode!
+    var worldNode: SKNode!
 
     // HUD nodes
-    private var headerCard: SKShapeNode!
-    private var footerCard: SKShapeNode!
-    private var livesLabel: SKLabelNode!
-    private var levelLabel: SKLabelNode!
-    private var goalLabel: SKLabelNode!
-    private var totalLabel: SKLabelNode!
-    private var movesValueLabel: SKLabelNode!
-    private var progressFill: SKShapeNode!
-    private var progressTrack: SKShapeNode!
-    private var cashLabel: SKLabelNode!
+    var headerCard: SKShapeNode!
+    var footerCard: SKShapeNode!
+    var livesLabel: SKLabelNode!
+    var levelLabel: SKLabelNode!
+    var goalLabel: SKLabelNode!
+    var starHintLabel: SKLabelNode!
+    var totalLabel: SKLabelNode!
+    var movesValueLabel: SKLabelNode!
+    var progressFill: SKShapeNode!
+    var progressTrack: SKShapeNode!
+    var cashLabel: SKLabelNode!
 
     // MARK: - Lifecycle
 
@@ -99,10 +256,13 @@ final class GameScene: SKScene {
 
         // Load persisted progress BEFORE building the HUD so the level number,
         // skin, and counts all match what we left off on.
-        levelConfig = Levels.config(for: Persistence.currentLevel)
+        levelConfig = Levels.config(for: initialLevel ?? Persistence.currentLevel)
+        rebuildChapterBackdrop()
 
         buildHeaderCard()
         buildFooterCard()
+        buildUndoButton()
+        buildComboMeter()
 
         // Now that the HUD nodes exist, hydrate the stored values via didSet —
         // each assignment will run updateHUD() and refresh its label.
@@ -118,567 +278,553 @@ final class GameScene: SKScene {
         updateHUD()
         layoutBoard()
         startNewGame()
+        observeStoreKitDeliveries()
+        startHUDRefreshTimer()
 
         // Kick off ambient music if it's enabled
         Audio.shared.syncWithPreferences()
     }
 
+    func startHUDRefreshTimer() {
+        removeAction(forKey: "hudRefreshTimer")
+        run(.repeatForever(.sequence([
+            .wait(forDuration: 1.0),
+            .run { [weak self] in self?.updateHUD() }
+        ])), withKey: "hudRefreshTimer")
+    }
+
     override func didChangeSize(_ oldSize: CGSize) {
         super.didChangeSize(oldSize)
         guard size.width > 0, !grid.isEmpty else { return }
+        rebuildChapterBackdrop()
         rebuildHUD()
         layoutBoard()
         rebuildAllNodes()
+        rebuildSyrupBand()
     }
 
-    // MARK: - HUD: Header Card
+    func rebuildChapterBackdrop() {
+        childNode(withName: "chapterBackdrop")?.removeFromParent()
+        guard size.width > 0, size.height > 0 else { return }
 
-    private func rebuildHUD() {
-        headerCard?.removeFromParent()
-        footerCard?.removeFromParent()
-        buildHeaderCard()
-        buildFooterCard()
-        updateHUD()
-    }
-
-    private func buildHeaderCard() {
-        let cardW = size.width - 24
-        let cardH: CGFloat = 170
-        let topY = size.height / 2 - safeTop - 8 - cardH / 2
-
-        let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 22)
-        card.fillColor = UIColor(white: 1, alpha: 0.42)
-        card.strokeColor = UIColor(white: 1, alpha: 0.55)
-        card.lineWidth = 1
-        card.position = CGPoint(x: 0, y: topY)
-        card.zPosition = 50
-        addChild(card)
-        headerCard = card
-
-        let leftX = -cardW / 2 + 18
-        let rightX = cardW / 2 - 18
-
-        // Lives pill (heart icon + 5/6)
-        let pillW: CGFloat = 84
-        let pill = makePill(width: pillW, height: 30,
-                            fill: UIColor(red: 0.99, green: 0.36, blue: 0.51, alpha: 0.95),
-                            stroke: .clear)
-        pill.position = CGPoint(x: leftX + pillW / 2, y: cardH / 2 - 24)
-        card.addChild(pill)
-
-        // Subtle drop shadow under the lives pill
-        let pillShadow = SKShapeNode(rectOf: CGSize(width: pillW, height: 30), cornerRadius: 15)
-        pillShadow.fillColor = UIColor(white: 0, alpha: 0.18)
-        pillShadow.strokeColor = .clear
-        pillShadow.position = CGPoint(x: leftX + pillW / 2, y: cardH / 2 - 24 - 2)
-        pillShadow.zPosition = -1
-        card.addChild(pillShadow)
-
-        let heart = Icons.sprite(Icons.Name.life, size: 13, tint: .white)
-        heart.position = CGPoint(x: -pillW / 2 + 16, y: 0)
-        pill.addChild(heart)
-
-        let livesL = SKLabelNode(fontNamed: "AvenirNext-Bold")
-        livesL.fontSize = 14
-        livesL.fontColor = .white
-        livesL.verticalAlignmentMode = .center
-        livesL.horizontalAlignmentMode = .center
-        livesL.position = CGPoint(x: 10, y: 0)
-        pill.addChild(livesL)
-        livesLabel = livesL
-
-        // Moves badge card (with drop shadow)
-        let movesBadgeW: CGFloat = 88
-        let movesBadgeH: CGFloat = 64
-        let badgeShadow = SKShapeNode(rectOf: CGSize(width: movesBadgeW, height: movesBadgeH), cornerRadius: 14)
-        badgeShadow.fillColor = UIColor(white: 0, alpha: 0.18)
-        badgeShadow.strokeColor = .clear
-        badgeShadow.position = CGPoint(x: rightX - movesBadgeW / 2, y: cardH / 2 - movesBadgeH / 2 - 14 - 3)
-        badgeShadow.zPosition = -1
-        card.addChild(badgeShadow)
-
-        let movesBadge = SKShapeNode(rectOf: CGSize(width: movesBadgeW, height: movesBadgeH), cornerRadius: 14)
-        movesBadge.fillColor = UIColor(white: 1, alpha: 0.97)
-        movesBadge.strokeColor = .clear
-        movesBadge.position = CGPoint(x: rightX - movesBadgeW / 2, y: cardH / 2 - movesBadgeH / 2 - 14)
-        card.addChild(movesBadge)
-
-        let movesNum = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        movesNum.fontSize = 28
-        movesNum.fontColor = UIColor(hex: "#0F172A")
-        movesNum.verticalAlignmentMode = .center
-        movesNum.horizontalAlignmentMode = .center
-        movesNum.position = CGPoint(x: 0, y: 8)
-        movesBadge.addChild(movesNum)
-        movesValueLabel = movesNum
-
-        let movesCap = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
-        movesCap.text = "Moves"
-        movesCap.fontSize = 12
-        movesCap.fontColor = UIColor(white: 0, alpha: 0.55)
-        movesCap.verticalAlignmentMode = .center
-        movesCap.horizontalAlignmentMode = .center
-        movesCap.position = CGPoint(x: 0, y: -14)
-        movesBadge.addChild(movesCap)
-
-        // Level title (bolt icon + "Level N")
-        let bolt = Icons.sprite(Icons.Name.level, size: 22, tint: UIColor(hex: "#FACC15"))
-        bolt.position = CGPoint(x: leftX + 12, y: 14)
-        card.addChild(bolt)
-
-        let lvl = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        lvl.fontSize = 28
-        lvl.fontColor = .white
-        lvl.text = "Level \(levelNumber)"
-        lvl.verticalAlignmentMode = .center
-        lvl.horizontalAlignmentMode = .left
-        lvl.position = CGPoint(x: leftX + 32, y: 14)
-        card.addChild(lvl)
-        levelLabel = lvl
-
-        // Score caption + goal pill
-        let scoreCap = SKLabelNode(fontNamed: "AvenirNext-Medium")
-        scoreCap.text = "Score"
-        scoreCap.fontSize = 14
-        scoreCap.fontColor = UIColor(white: 1, alpha: 0.95)
-        scoreCap.verticalAlignmentMode = .center
-        scoreCap.horizontalAlignmentMode = .left
-        scoreCap.position = CGPoint(x: leftX, y: -22)
-        card.addChild(scoreCap)
-
-        let goalPill = makePill(width: 130, height: 28,
-                                fill: UIColor(white: 1, alpha: 0.85),
-                                stroke: .clear)
-        goalPill.position = CGPoint(x: leftX + 50 + 65, y: -22)
-        card.addChild(goalPill)
-
-        let target = Icons.sprite(Icons.Name.goal, size: 14, tint: UIColor(hex: "#EF4444"))
-        target.position = CGPoint(x: -45, y: 0)
-        goalPill.addChild(target)
-
-        let gLabel = SKLabelNode(fontNamed: "AvenirNext-Bold")
-        gLabel.fontSize = 13
-        gLabel.fontColor = UIColor(hex: "#0F172A")
-        gLabel.verticalAlignmentMode = .center
-        gLabel.horizontalAlignmentMode = .center
-        gLabel.position = CGPoint(x: 8, y: 0)
-        goalPill.addChild(gLabel)
-        goalLabel = gLabel
-
-        // Total
-        let totalCap = SKLabelNode(fontNamed: "AvenirNext-Medium")
-        totalCap.text = "Total"
-        totalCap.fontSize = 14
-        totalCap.fontColor = UIColor(white: 1, alpha: 0.95)
-        totalCap.verticalAlignmentMode = .center
-        totalCap.horizontalAlignmentMode = .right
-        totalCap.position = CGPoint(x: rightX - 70, y: -22)
-        card.addChild(totalCap)
-
-        let totalNum = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        totalNum.fontSize = 16
-        totalNum.fontColor = .white
-        totalNum.verticalAlignmentMode = .center
-        totalNum.horizontalAlignmentMode = .right
-        totalNum.position = CGPoint(x: rightX, y: -22)
-        card.addChild(totalNum)
-        totalLabel = totalNum
-
-        // Star progress bar
-        let trackW = cardW - 36
-        let trackH: CGFloat = 8
-        let trackY: CGFloat = -cardH / 2 + 22
-
-        let track = SKShapeNode(rectOf: CGSize(width: trackW, height: trackH), cornerRadius: trackH / 2)
-        track.fillColor = UIColor(white: 1, alpha: 0.25)
-        track.strokeColor = .clear
-        track.position = CGPoint(x: 0, y: trackY)
-        card.addChild(track)
-        progressTrack = track
-
-        let fill = SKShapeNode(rectOf: CGSize(width: trackW, height: trackH), cornerRadius: trackH / 2)
-        fill.fillColor = UIColor(hex: "#FBBF24")
-        fill.strokeColor = .clear
-        fill.position = CGPoint(x: 0, y: trackY)
-        fill.xScale = 0.0001
-        card.addChild(fill)
-        progressFill = fill
-
-        for (idx, frac) in [0.33, 0.66, 1.0].enumerated() {
-            let starNode = makeShinyStar(size: 22)
-            let x = -trackW / 2 + trackW * CGFloat(frac)
-            starNode.position = CGPoint(x: x, y: trackY)
-            starNode.zPosition = 2
-            card.addChild(starNode)
-
-            // Stagger the pulse so the trio twinkles like a constellation
-            let phase = Double(idx) * 0.45
-            starNode.run(.sequence([.wait(forDuration: phase),
-                                    .repeatForever(.sequence([
-                                        .scale(to: 1.12, duration: 0.9),
-                                        .scale(to: 1.0,  duration: 0.9)
-                                    ]))]))
-
-            // Occasional sparkle burst (radial dots that grow + fade)
-            scheduleSparkle(on: starNode, delay: 1.5 + Double(idx) * 0.7)
+        let chapter = Levels.chapter(for: levelNumber)
+        let palette: [UIColor]
+        switch chapter.title {
+        case "Frost Valley":
+            palette = [UIColor(hex: "#7DD3FC"), UIColor(hex: "#E0F2FE"), UIColor(hex: "#A7F3D0")]
+        case "Bomb Bakery":
+            palette = [UIColor(hex: "#F97316"), UIColor(hex: "#FDE68A"), UIColor(hex: "#F472B6")]
+        case "Crown Gate":
+            palette = [UIColor(hex: "#FACC15"), UIColor(hex: "#F9A8D4"), UIColor(hex: "#A78BFA")]
+        case "Royal Rush":
+            palette = [UIColor(hex: "#8B5CF6"), UIColor(hex: "#22D3EE"), UIColor(hex: "#F472B6")]
+        case "Sugar Throne":
+            palette = [UIColor(hex: "#0F172A"), UIColor(hex: "#7C3AED"), UIColor(hex: "#F59E0B")]
+        default:
+            palette = [UIColor(hex: "#FBCFE8"), UIColor(hex: "#FDE68A"), UIColor(hex: "#BAE6FD")]
         }
+
+        let backdrop = SKNode()
+        backdrop.name = "chapterBackdrop"
+        backdrop.zPosition = -2500
+
+        let bandH = size.height / CGFloat(palette.count)
+        for (index, color) in palette.enumerated() {
+            let band = SKShapeNode(rectOf: CGSize(width: size.width, height: bandH + 2))
+            band.fillColor = color.withAlphaComponent(index == 0 ? 0.82 : 0.72)
+            band.strokeColor = .clear
+            band.position = CGPoint(x: 0, y: size.height / 2 - bandH * (CGFloat(index) + 0.5))
+            backdrop.addChild(band)
+        }
+
+        for i in 0..<18 {
+            let sparkle = SKShapeNode(rectOf: CGSize(width: 5, height: 5), cornerRadius: 1)
+            sparkle.fillColor = UIColor.white.withAlphaComponent(i.isMultiple(of: 3) ? 0.28 : 0.16)
+            sparkle.strokeColor = .clear
+            sparkle.zRotation = .pi / 4
+            sparkle.position = CGPoint(x: CGFloat.random(in: -size.width / 2...size.width / 2),
+                                       y: CGFloat.random(in: -size.height / 2...size.height / 2))
+            backdrop.addChild(sparkle)
+        }
+
+        addChild(backdrop)
     }
 
-    /// Builds a stack: glow halo → main gold star → subtle highlight → tiny sparkle layer.
-    private func makeShinyStar(size: CGFloat) -> SKNode {
+    // MARK: - Combo / momentum meter
+
+    /// Score-style thresholds for the chain meter. Each tier escalates the
+    /// player-facing feedback (color, haptic, screen tint, time-dilation).
+    struct ComboTier {
+        let count: Int
+        let label: String
+        let color: UIColor
+    }
+
+    static let comboTiers: [ComboTier] = [
+        ComboTier(count: 5,  label: "NICE!",       color: UIColor(hex: "#FACC15")),
+        ComboTier(count: 9,  label: "COMBO!",      color: UIColor(hex: "#FB923C")),
+        ComboTier(count: 14, label: "SUGAR RUSH!", color: UIColor(hex: "#EC4899")),
+        ComboTier(count: 20, label: "UNREAL!",     color: UIColor(hex: "#A855F7"))
+    ]
+
+    var comboMeterContainer: SKNode? { comboMeterTrack?.parent }
+    static let comboMeterTrackWidth: CGFloat = 200
+
+    func buildComboMeter() {
+        comboMeterContainer?.removeFromParent()
+        let headerH: CGFloat = 170
+        let headerBottom = size.height / 2 - safeTop - 8 - headerH
         let container = SKNode()
+        container.position = CGPoint(x: 0, y: headerBottom - 16)
+        container.zPosition = 58
+        container.alpha = 0
+        addChild(container)
 
-        // Soft glow halo behind the star
-        let halo = SKShapeNode(circleOfRadius: size * 0.78)
-        halo.fillColor = UIColor(hex: "#FDE68A").withAlphaComponent(0.45)
-        halo.strokeColor = .clear
-        halo.glowWidth = 6
-        halo.zPosition = -2
-        halo.blendMode = .add
-        container.addChild(halo)
-        halo.run(.repeatForever(.sequence([
-            .group([.scale(to: 1.18, duration: 1.6),
-                    .fadeAlpha(to: 0.7, duration: 1.6)]),
-            .group([.scale(to: 1.0, duration: 1.6),
-                    .fadeAlpha(to: 0.4, duration: 1.6)])
-        ])))
+        let trackW: CGFloat = GameScene.comboMeterTrackWidth
+        let trackH: CGFloat = 14
+        let track = SKShapeNode(rectOf: CGSize(width: trackW, height: trackH), cornerRadius: trackH / 2)
+        track.fillColor = UIColor(white: 0, alpha: 0.45)
+        track.strokeColor = UIColor.white.withAlphaComponent(0.45)
+        track.lineWidth = 1
+        container.addChild(track)
+        comboMeterTrack = track
 
-        // Main gold star
-        let star = SKShapeNode(path: starPath(size: size))
-        star.fillColor = UIColor(hex: "#FBBF24")        // warm gold
-        star.strokeColor = UIColor(hex: "#B45309")     // amber edge
-        star.lineWidth = 1
-        star.glowWidth = 0.5
-        star.zPosition = 0
-        container.addChild(star)
+        let innerW = trackW - 4
+        let innerH = trackH - 4
+        let fill = SKShapeNode(rectOf: CGSize(width: innerW, height: innerH), cornerRadius: innerH / 2)
+        fill.fillColor = UIColor(hex: "#FACC15")
+        fill.strokeColor = .clear
+        fill.position = CGPoint(x: -innerW / 2, y: 0)
+        fill.xScale = 0.0001
+        container.addChild(fill)
+        comboMeterFill = fill
 
-        // Inner highlight — lighter gold, smaller, offset up-left for "lit from above" feel
-        let highlight = SKShapeNode(path: starPath(size: size * 0.55))
-        highlight.fillColor = UIColor(hex: "#FEF3C7").withAlphaComponent(0.85)
-        highlight.strokeColor = .clear
-        highlight.position = CGPoint(x: -size * 0.05, y: size * 0.06)
-        highlight.zPosition = 1
-        container.addChild(highlight)
-
-        return container
+        let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        label.fontSize = 9.5
+        label.fontColor = .white
+        label.text = "0"
+        label.verticalAlignmentMode = .center
+        label.horizontalAlignmentMode = .center
+        container.addChild(label)
+        comboMeterLabel = label
     }
 
-    /// 5-pointed star path centered at origin.
-    private func starPath(size: CGFloat) -> CGPath {
-        let path = UIBezierPath()
-        let outer = size / 2
-        let inner = outer * 0.42
-        let points = 5
-        for i in 0..<(points * 2) {
-            let r = (i % 2 == 0) ? outer : inner
-            let theta = -CGFloat.pi / 2 + CGFloat(i) * (.pi / CGFloat(points))
-            let p = CGPoint(x: r * cos(theta), y: r * sin(theta))
-            if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+    func updateComboMeter() {
+        guard let fill = comboMeterFill,
+              let label = comboMeterLabel,
+              let container = comboMeterContainer else { return }
+        let chain = chainTilesCleared
+        let topTier = GameScene.comboTiers.last?.count ?? 20
+        let frac = max(0, min(1.0, CGFloat(chain) / CGFloat(topTier)))
+        let innerW = GameScene.comboMeterTrackWidth - 4
+        fill.removeAllActions()
+        fill.run(.scaleX(to: max(0.0001, frac), duration: 0.12))
+        fill.position.x = -innerW / 2 + innerW * frac / 2
+
+        // Pick the highest tier we've reached for color
+        var tierColor = UIColor(hex: "#FACC15")
+        for tier in GameScene.comboTiers where chain >= tier.count {
+            tierColor = tier.color
         }
-        path.close()
-        return path.cgPath
+        fill.fillColor = tierColor
+        label.text = chain > 0 ? "\(chain)" : ""
+        container.alpha = chain >= 3 ? 1.0 : 0.0
     }
 
-    /// Periodic sparkle: a tiny white dot grows + fades around the star.
-    private func scheduleSparkle(on node: SKNode, delay: TimeInterval) {
-        let action = SKAction.run { [weak self, weak node] in
-            guard let self = self, let node = node else { return }
-            self.emitSparkle(on: node)
+    func resetComboMeter() {
+        chainTilesCleared = 0
+        chainSpecialsTriggered = 0
+        chainBlockersDamaged = 0
+        lastChainTierFired = 0
+        updateComboMeter()
+    }
+
+    /// Builds tension on a tight finish: when 3 or fewer moves remain, pulse the
+    /// moves badge and fire an escalating haptic. Only triggers on the step that
+    /// crosses the threshold downward so it doesn't spam during cascades.
+    func maybeLowMovesTension(old: Int) {
+        guard !levelEnded, movesLeft > 0, movesLeft <= 3, movesLeft < old else { return }
+        let badge = movesValueLabel?.parent ?? movesValueLabel
+        badge?.removeAction(forKey: "lowMovesPulse")
+        badge?.run(.sequence([
+            .scale(to: 1.18, duration: 0.10),
+            .scale(to: 1.0, duration: 0.16)
+        ]), withKey: "lowMovesPulse")
+        Effects.haptic(movesLeft == 1 ? .heavy : .medium)
+    }
+
+    /// Records this resolution step in the chain stats and fires the next tier
+    /// of visual + haptic feedback if a milestone was crossed.
+    func recordChainProgress(tilesCleared: Int,
+                                     blockersDamaged: Int,
+                                     specialsTriggered: Int) {
+        chainTilesCleared += tilesCleared
+        chainBlockersDamaged += blockersDamaged
+        chainSpecialsTriggered += specialsTriggered
+        let chain = chainTilesCleared + chainSpecialsTriggered * 4
+        var newTier = lastChainTierFired
+        for (index, tier) in GameScene.comboTiers.enumerated() {
+            if chain >= tier.count && (index + 1) > lastChainTierFired {
+                newTier = index + 1
+            }
         }
-        node.run(.sequence([
-            .wait(forDuration: delay),
-            .repeatForever(.sequence([
-                action,
-                .wait(forDuration: 2.0 + Double.random(in: 0...1.2))
-            ]))
+        if newTier > lastChainTierFired {
+            lastChainTierFired = newTier
+            fireComboTier(newTier - 1)
+        }
+        updateComboMeter()
+    }
+
+    func fireComboTier(_ index: Int) {
+        guard index < GameScene.comboTiers.count else { return }
+        let tier = GameScene.comboTiers[index]
+        flashScreenTint(tier.color.withAlphaComponent(0.32), duration: 0.32 + Double(index) * 0.05)
+        switch index {
+        case 0:
+            Effects.haptic(.light)
+        case 1:
+            Effects.haptic(.medium)
+            Audio.shared.play(.combo(depth: 3))
+        case 2:
+            Effects.haptic(.heavy)
+            Audio.shared.play(.combo(depth: 5))
+            applyTimeDilation(scale: 0.55, duration: 0.45)
+        default:
+            Effects.notify(.success)
+            Audio.shared.play(.combo(depth: 8))
+            applyTimeDilation(scale: 0.45, duration: 0.6)
+        }
+        // Pulse the meter for emphasis
+        comboMeterContainer?.run(.sequence([
+            .scale(to: 1.15, duration: 0.10),
+            .scale(to: 1.0, duration: 0.14)
         ]))
-    }
-
-    private func emitSparkle(on node: SKNode) {
-        let r: CGFloat = 12
-        let theta = CGFloat.random(in: 0...(.pi * 2))
-        let dot = SKShapeNode(circleOfRadius: 1.6)
-        dot.fillColor = .white
-        dot.strokeColor = .clear
-        dot.glowWidth = 3
-        dot.blendMode = .add
-        dot.position = CGPoint(x: r * cos(theta) * 0.6,
-                               y: r * sin(theta) * 0.6)
-        dot.zPosition = 3
-        dot.alpha = 0
-        dot.setScale(0.3)
-        node.addChild(dot)
-
-        dot.run(.sequence([
-            .group([
-                .scale(to: 1.8, duration: 0.18),
-                .fadeAlpha(to: 1.0, duration: 0.1)
-            ]),
-            .group([
-                .scale(to: 0.2, duration: 0.4),
-                .fadeOut(withDuration: 0.4)
-            ]),
+        // Light banner just above the meter so the streak gets its own moment.
+        let popup = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        popup.text = tier.label
+        popup.fontSize = 16
+        popup.fontColor = tier.color
+        popup.position = CGPoint(x: 0, y: 22)
+        popup.alpha = 0
+        popup.zPosition = 5
+        comboMeterContainer?.addChild(popup)
+        popup.run(.sequence([
+            .fadeIn(withDuration: 0.10),
+            .moveBy(x: 0, y: 12, duration: 0.5),
+            .fadeOut(withDuration: 0.2),
             .removeFromParent()
         ]))
     }
 
-    // MARK: - HUD: Footer Card
+    func flashScreenTint(_ color: UIColor, duration: TimeInterval) {
+        let tint = SKShapeNode(rectOf: size)
+        tint.fillColor = color
+        tint.strokeColor = .clear
+        tint.zPosition = 1100
+        tint.alpha = 0
+        addChild(tint)
+        tint.run(.sequence([
+            .fadeAlpha(to: 0.6, duration: duration * 0.25),
+            .fadeOut(withDuration: duration * 0.75),
+            .removeFromParent()
+        ]))
+    }
 
-    private func buildFooterCard() {
-        let cardW = size.width - 24
-        let cardH: CGFloat = 180
-        let bottomY = -size.height / 2 + safeBottom + 8 + cardH / 2
+    func applyTimeDilation(scale: CGFloat, duration: TimeInterval) {
+        worldNode.speed = scale
+        run(.sequence([
+            .wait(forDuration: duration),
+            .run { [weak self] in self?.worldNode.speed = 1.0 }
+        ]))
+    }
 
-        let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 22)
-        card.fillColor = UIColor(white: 1, alpha: 0.42)
-        card.strokeColor = UIColor(white: 1, alpha: 0.55)
-        card.lineWidth = 1
-        card.position = CGPoint(x: 0, y: bottomY)
-        card.zPosition = 50
-        addChild(card)
-        footerCard = card
+    // MARK: - Syrup line (rising pressure mechanic)
 
-        let topRowY = cardH / 2 - 28
-        let leftX = -cardW / 2 + 18
-        let rightX = cardW / 2 - 18
+    func resetSyrupForLevel() {
+        syrupBand?.removeFromParent()
+        syrupBand = nil
+        guard levelConfig.layout.syrupTickEvery != nil else {
+            syrupRow = -1
+            syrupMovesSinceTick = 0
+            return
+        }
+        // Start one row below the bottom playable row so the first tick coats
+        // the actual lowest row.
+        syrupRow = rows
+        syrupMovesSinceTick = 0
+        rebuildSyrupBand()
+    }
 
-        // Settings (gear) — light circle, soft slate icon (less aggressive than black)
-        let slate = UIColor(hex: "#475569")
-        let gear = makeSymbolCircle(symbol: Icons.Name.settings, diameter: 44,
-                                    fill: UIColor(white: 1, alpha: 0.95),
-                                    iconTint: slate,
-                                    iconSize: 18,
-                                    weight: .medium)
-        gear.position = CGPoint(x: leftX + 22, y: topRowY)
-        gear.name = "settingsButton"
-        card.addChild(gear)
+    func rebuildSyrupBand() {
+        syrupBand?.removeFromParent()
+        syrupBand = nil
+        guard levelConfig.layout.syrupTickEvery != nil,
+              syrupRow >= 0,
+              syrupRow < rows else { return }
+        let band = SKNode()
+        band.zPosition = -3
+        band.name = "syrupBand"
 
-        // Cash pill — gold-accented "wallet" with banknote + amount + shadow
-        let cashPillW: CGFloat = 168
-        let cashPillH: CGFloat = 40
+        // Find the y-position of the next-to-be-coated row. If the syrup is
+        // already at the top of the board, anchor the band to the top edge.
+        let row = max(0, min(rows - 1, syrupRow))
+        let centerY = point(forRow: row, col: 0).y
+        let totalW = tileSize * CGFloat(cols) + gap * CGFloat(cols + 1)
 
-        let cashPillShadow = makePill(width: cashPillW, height: cashPillH,
-                                      fill: UIColor(white: 0, alpha: 0.2),
-                                      stroke: .clear)
-        cashPillShadow.position = CGPoint(x: 0, y: topRowY - 3)
-        cashPillShadow.zPosition = -1
-        card.addChild(cashPillShadow)
+        let band1 = SKShapeNode(rectOf: CGSize(width: totalW + 24, height: tileSize * 0.6),
+                                cornerRadius: tileSize * 0.3)
+        band1.fillColor = UIColor(hex: "#EC4899").withAlphaComponent(0.20)
+        band1.strokeColor = UIColor(hex: "#FBCFE8").withAlphaComponent(0.70)
+        band1.lineWidth = 2
+        band1.glowWidth = 4
+        band1.blendMode = .add
+        band1.position = CGPoint(x: 0, y: centerY)
+        band.addChild(band1)
 
-        let cashPill = makePill(width: cashPillW, height: cashPillH,
-                                fill: UIColor(white: 1, alpha: 0.97),
-                                stroke: UIColor(hex: "#FFD700").withAlphaComponent(0.55))
-        cashPill.lineWidth = 1.5
-        cashPill.position = CGPoint(x: 0, y: topRowY)
-        card.addChild(cashPill)
+        band1.run(.repeatForever(.sequence([
+            .fadeAlpha(to: 0.55, duration: 1.1),
+            .fadeAlpha(to: 0.85, duration: 1.1)
+        ])))
 
-        // Gold gradient inset (a thin lighter pill on top to fake a soft sheen)
-        let sheen = makePill(width: cashPillW - 4, height: cashPillH / 2,
-                             fill: UIColor(hex: "#FFFBEB").withAlphaComponent(0.55),
-                             stroke: .clear)
-        sheen.position = CGPoint(x: 0, y: cashPillH / 4 - 2)
-        cashPill.addChild(sheen)
+        worldNode.addChild(band)
+        syrupBand = band
+    }
 
-        // Coin icon (gold banknote, prominent)
-        let coinHalo = SKShapeNode(circleOfRadius: 14)
-        coinHalo.fillColor = UIColor(hex: "#FEF3C7")
-        coinHalo.strokeColor = UIColor(hex: "#FFD700").withAlphaComponent(0.5)
-        coinHalo.lineWidth = 1
-        coinHalo.position = CGPoint(x: -cashPillW / 2 + 22, y: 0)
-        cashPill.addChild(coinHalo)
+    /// Called once per resolved player turn. When the tick counter hits the
+    /// configured interval, every playable cell on the current syrup row gets
+    /// coated with a single-hit syrup blocker, the line climbs one row, and
+    /// the visual band slides up.
+    func tickSyrupIfNeeded() {
+        guard let interval = levelConfig.layout.syrupTickEvery,
+              syrupRow >= 0,
+              syrupRow < rows + 1 else { return }
+        syrupMovesSinceTick += 1
+        guard syrupMovesSinceTick >= interval else { return }
+        syrupMovesSinceTick = 0
 
-        let cashIcon = Icons.sprite(Icons.Name.cashFilled, size: 16,
-                                    weight: .heavy,
-                                    tint: UIColor(hex: "#D97706"))
-        coinHalo.addChild(cashIcon)
+        // First tick of the level coats the bottom row (since syrupRow starts
+        // at `rows`). Each subsequent tick climbs one more row.
+        let nextRow = syrupRow - 1
+        guard nextRow >= 0 else {
+            // Syrup capped at the top — no more rows to coat.
+            return
+        }
+        syrupRow = nextRow
 
-        let cashL = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        cashL.fontSize = 19
-        cashL.fontColor = UIColor(hex: "#0F172A")
-        cashL.verticalAlignmentMode = .center
-        cashL.horizontalAlignmentMode = .center
-        cashL.position = CGPoint(x: 10, y: 0)
-        cashPill.addChild(cashL)
-        cashLabel = cashL
+        var coated: [Pos] = []
+        for c in 0..<cols {
+            if let m = levelConfig.layout.mask, !m[syrupRow][c] { continue }
+            guard var cell = grid[syrupRow][c] else { continue }
+            // Skip cells that already have a blocker (don't double-coat); skip
+            // ingredient baskets so they stay drop-able.
+            guard cell.blocker == nil, cell.kind == .normal else { continue }
+            cell.blocker = Blocker(type: .syrup, hits: 1)
+            cell.special = nil
+            grid[syrupRow][c] = cell
+            coated.append(Pos(r: syrupRow, c: c))
+        }
+        for p in coated { refreshNode(at: p) }
+        rebuildSyrupBand()
+        if !coated.isEmpty {
+            Audio.shared.play(.jelly)
+            Effects.haptic(.medium)
+            Effects.showComboBanner(text: String(localized: "SYRUP RISING!"),
+                                    color: UIColor(hex: "#EC4899"),
+                                    in: self)
+        }
+        Analytics.track("syrup_tick",
+                        properties: ["level": "\(levelNumber)",
+                                     "row": "\(syrupRow)",
+                                     "coated": "\(coated.count)"])
+    }
 
-        // Cart — light circle, soft slate icon
-        let cart = makeSymbolCircle(symbol: Icons.Name.cart, diameter: 44,
-                                    fill: UIColor(white: 1, alpha: 0.95),
-                                    iconTint: slate,
-                                    iconSize: 18,
-                                    weight: .medium)
-        cart.position = CGPoint(x: rightX - 22, y: topRowY)
-        cart.name = "cartButton"
-        card.addChild(cart)
+    // MARK: - Undo last move
 
-        // Booster row — softer pastel fills, smaller / lighter icons
-        let boosters: [(symbol: String, label: String, fill: UIColor,
-                        iconSize: CGFloat, iconWeight: UIImage.SymbolWeight,
-                        iconTint: UIColor, chip: String, paid: Bool)] = [
-            (Icons.Name.hammer,     "Hammer",  UIColor(hex: "#FB923C"), 22, .medium,    .white,                       "88",  true),
-            (Icons.Name.swap,       "Swap",    UIColor(hex: "#FACC15"), 18, .regular,   UIColor(hex: "#1E293B"),      "130", true),
-            (Icons.Name.shuffle,    "Shuffle", UIColor(hex: "#7DD3FC"), 22, .semibold,  .white,                       "2",   false),
-            (Icons.Name.extraMoves, "+Moves",  UIColor(hex: "#F9A8D4"), 22, .heavy,     UIColor(hex: "#FACC15"),      "119", true),
-            (Icons.Name.life,       "Life",    UIColor(hex: "#F9A8D4"), 20, .heavy,     UIColor(hex: "#EF4444"),      "152", true)
-        ]
+    func takeUndoSnapshot() {
+        undoSnapshot = UndoSnapshot(grid: grid,
+                                     nodes: nodes,
+                                     score: score,
+                                     movesLeft: movesLeft,
+                                     collectedGoalTiles: collectedGoalTiles,
+                                     createdSpecials: createdSpecials,
+                                     detonatedBombs: detonatedBombs,
+                                     collectedIngredients: collectedIngredients,
+                                     collectedKeys: collectedKeys,
+                                     openedChests: openedChests,
+                                     chocolateDamagedThisTurn: chocolateDamagedThisTurn,
+                                     syrupRow: syrupRow,
+                                     syrupMovesSinceTick: syrupMovesSinceTick,
+                                     sugarRushCharged: sugarRushCharged)
+        refreshUndoButton()
+    }
 
-        let cellW = (cardW - 24) / CGFloat(boosters.count)
-        let circleD: CGFloat = 52
-        let rowY: CGFloat = -cardH / 2 + 56
-
-        for (i, b) in boosters.enumerated() {
-            let cx = -cardW / 2 + 12 + cellW * (CGFloat(i) + 0.5)
-
-            // Drop shadow under circle
-            let shadow = SKShapeNode(circleOfRadius: circleD / 2)
-            shadow.fillColor = UIColor(white: 0, alpha: 0.18)
-            shadow.strokeColor = .clear
-            shadow.position = CGPoint(x: cx, y: rowY + 8)
-            shadow.zPosition = 1
-            card.addChild(shadow)
-
-            let circle = SKShapeNode(circleOfRadius: circleD / 2)
-            circle.fillColor = b.fill
-            circle.strokeColor = .clear
-            circle.position = CGPoint(x: cx, y: rowY + 12)
-            circle.zPosition = 2
-            circle.name = "booster:\(b.label)"
-            boosterCircles[b.label] = circle
-            if b.label == "+Moves" {
-                movesBoosterCircle = circle
+    /// Restore the most recent pre-swap snapshot. The first undo per level is
+    /// free; subsequent undos cost `Economy.undoCost`. No-op when no snapshot
+    /// is available, when the player can't afford the coin cost, or while a
+    /// cascade is still resolving.
+    func performUndo() {
+        guard let snapshot = undoSnapshot, !levelEnded else { return }
+        if isResolving { return }
+        if freeUndoUsedThisLevel {
+            guard cash >= Economy.undoCost else {
+                insufficientCashFeedback()
+                return
             }
-            card.addChild(circle)
+            cash -= Economy.undoCost
+            Analytics.track("coin_spend",
+                            properties: ["item": "undo",
+                                         "coins": "\(Economy.undoCost)",
+                                         "level": "\(levelNumber)"])
+        } else {
+            freeUndoUsedThisLevel = true
+        }
+        Analytics.track("undo_used",
+                        properties: ["level": "\(levelNumber)",
+                                     "free": "\(!freeUndoUsedThisLevel)"])
 
-            let icon = Icons.sprite(b.symbol, size: b.iconSize, weight: b.iconWeight, tint: b.iconTint)
-            circle.addChild(icon)
-
-            // Quantity badge — only on the +Moves booster. Shows currently selected
-            // quantity (e.g. "+5"); tapping opens the picker popup.
-            if b.label == "+Moves" {
-                let badgeW: CGFloat = 28
-                let badgeH: CGFloat = 18
-                let badge = SKShapeNode(rectOf: CGSize(width: badgeW, height: badgeH), cornerRadius: badgeH / 2)
-                badge.fillColor = UIColor(hex: "#22C55E")
-                badge.strokeColor = .white
-                badge.lineWidth = 1.2
-                badge.position = CGPoint(x: circleD / 2 - 2, y: circleD / 2 - 2)
-                badge.zPosition = 3
-                badge.name = "movesQuantityBadge"
-                circle.addChild(badge)
-                movesQuantityBadge = badge
-
-                badge.run(.repeatForever(.sequence([
-                    .scale(to: 1.12, duration: 0.7),
-                    .scale(to: 1.0, duration: 0.7)
-                ])))
-
-                let badgeLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-                badgeLabel.text = "+\(movesQuantity)"
-                badgeLabel.fontSize = 11
-                badgeLabel.fontColor = .white
-                badgeLabel.verticalAlignmentMode = .center
-                badgeLabel.horizontalAlignmentMode = .center
-                badge.addChild(badgeLabel)
-                movesQuantityBadgeLabel = badgeLabel
+        // Remove every visual tile node currently on the board — the snapshot
+        // nodes are stale references, so we rebuild from grid state.
+        for r in 0..<nodes.count {
+            for c in 0..<nodes[r].count {
+                nodes[r][c]?.removeFromParent()
+                nodes[r][c] = nil
             }
+        }
+        grid = snapshot.grid
+        score = snapshot.score
+        movesLeft = snapshot.movesLeft
+        collectedGoalTiles = snapshot.collectedGoalTiles
+        createdSpecials = snapshot.createdSpecials
+        detonatedBombs = snapshot.detonatedBombs
+        collectedIngredients = snapshot.collectedIngredients
+        collectedKeys = snapshot.collectedKeys
+        openedChests = snapshot.openedChests
+        chocolateDamagedThisTurn = snapshot.chocolateDamagedThisTurn
+        syrupRow = snapshot.syrupRow
+        syrupMovesSinceTick = snapshot.syrupMovesSinceTick
+        sugarRushCharged = snapshot.sugarRushCharged
+        rebuildAllNodes()
+        rebuildSyrupBand()
+        undoSnapshot = nil
+        refreshUndoButton()
+        Effects.haptic(.medium)
+        Effects.notify(.warning)
+    }
 
-            // Chip below circle
-            let chipW: CGFloat = b.paid ? 54 : 30
-            let chipH: CGFloat = 18
-            let chip = SKShapeNode(rectOf: CGSize(width: chipW, height: chipH), cornerRadius: chipH / 2)
-            chip.fillColor = b.paid ? UIColor(white: 0, alpha: 0.7) : UIColor(white: 1, alpha: 0.85)
-            chip.strokeColor = .clear
-            chip.position = CGPoint(x: cx, y: rowY - 18)
-            card.addChild(chip)
+    func buildUndoButton() {
+        undoButton?.removeFromParent()
+        let btn = SKNode()
+        if footerCard != nil {
+            let cardW = size.width - 24
+            let cardH: CGFloat = 180
+            let rightX = cardW / 2 - 18
+            let topRowY = cardH / 2 - 28
+            btn.position = CGPoint(x: rightX - 78, y: topRowY)
+        } else {
+            btn.position = CGPoint(x: size.width / 2 - 100, y: -size.height / 2 + safeBottom + 160)
+        }
+        btn.zPosition = 3
+        btn.name = "undoButton"
 
-            if b.paid {
-                // Programmatic gold coin — bypass SF Symbol multicolor weirdness
-                let coin = SKShapeNode(circleOfRadius: 7)
-                coin.fillColor = UIColor(hex: "#FFD700")
-                coin.strokeColor = UIColor(hex: "#D97706")
-                coin.lineWidth = 1
-                coin.position = CGPoint(x: -16, y: 0)
-                chip.addChild(coin)
+        let shadow = SKShapeNode(circleOfRadius: 22)
+        shadow.fillColor = UIColor(white: 0, alpha: 0.22)
+        shadow.strokeColor = .clear
+        shadow.position = CGPoint(x: 0, y: -3)
+        shadow.zPosition = -1
+        btn.addChild(shadow)
 
-                let dollar = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-                dollar.text = "$"
-                dollar.fontSize = 9
-                dollar.fontColor = UIColor(hex: "#7C2D12")
-                dollar.verticalAlignmentMode = .center
-                dollar.horizontalAlignmentMode = .center
-                coin.addChild(dollar)
+        let bg = SKShapeNode(circleOfRadius: 22)
+        bg.fillColor = UIColor(white: 1, alpha: 0.95)
+        bg.strokeColor = UIColor(hex: "#0F172A").withAlphaComponent(0.18)
+        bg.lineWidth = 1
+        bg.name = "undoButton"
+        btn.addChild(bg)
 
-                let chipL = SKLabelNode(fontNamed: "AvenirNext-Bold")
-                chipL.text = b.chip
-                chipL.fontSize = 11
-                chipL.fontColor = .white
-                chipL.verticalAlignmentMode = .center
-                chipL.horizontalAlignmentMode = .center
-                chipL.position = CGPoint(x: 6, y: 0)
-                chip.addChild(chipL)
-            } else {
-                let chipL = SKLabelNode(fontNamed: "AvenirNext-Bold")
-                chipL.text = b.chip
-                chipL.fontSize = 11
-                chipL.fontColor = UIColor(hex: "#0F172A")
-                chipL.verticalAlignmentMode = .center
-                chipL.horizontalAlignmentMode = .center
-                chip.addChild(chipL)
-            }
+        let arrow = Icons.sprite("arrow.uturn.backward",
+                                 size: 19,
+                                 weight: .heavy,
+                                 tint: UIColor(hex: "#475569"))
+        arrow.name = "undoButton"
+        btn.addChild(arrow)
 
-            // Booster name
-            let nameL = SKLabelNode(fontNamed: "AvenirNext-Bold")
-            nameL.text = b.label
-            nameL.fontSize = 11
-            nameL.fontColor = .white
-            nameL.verticalAlignmentMode = .center
-            nameL.horizontalAlignmentMode = .center
-            nameL.position = CGPoint(x: cx, y: rowY - 38)
-            card.addChild(nameL)
+        let badgeBg = SKShapeNode(rectOf: CGSize(width: 30, height: 14), cornerRadius: 7)
+        badgeBg.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.85)
+        badgeBg.strokeColor = .white.withAlphaComponent(0.7)
+        badgeBg.lineWidth = 0.8
+        badgeBg.position = CGPoint(x: 8, y: -18)
+        badgeBg.zPosition = 1
+        btn.addChild(badgeBg)
+
+        let badge = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        badge.fontSize = 9
+        badge.verticalAlignmentMode = .center
+        badge.horizontalAlignmentMode = .center
+        badge.zPosition = 2
+        badgeBg.addChild(badge)
+        undoBadge = badge
+
+        (footerCard ?? self).addChild(btn)
+        undoButton = btn
+        refreshUndoButton()
+    }
+
+    func refreshUndoButton() {
+        guard let btn = undoButton else { return }
+        let available = undoSnapshot != nil && !levelEnded
+        btn.alpha = available ? 1.0 : 0.32
+        if !available {
+            undoBadge?.text = nil
+            undoBadge?.parent?.alpha = 0
+            return
+        }
+        undoBadge?.parent?.alpha = 1
+        if freeUndoUsedThisLevel {
+            undoBadge?.text = "\(Economy.undoCost)"
+            undoBadge?.fontColor = UIColor(hex: "#FBBF24")
+        } else {
+            undoBadge?.text = String(localized: "FREE")
+            undoBadge?.fontColor = UIColor(hex: "#34D399")
         }
     }
 
-    // MARK: - HUD helpers
-
-    private func makePill(width: CGFloat, height: CGFloat, fill: UIColor, stroke: UIColor) -> SKShapeNode {
-        let pill = SKShapeNode(rectOf: CGSize(width: width, height: height), cornerRadius: height / 2)
-        pill.fillColor = fill
-        pill.strokeColor = stroke
-        pill.lineWidth = stroke == .clear ? 0 : 1
-        return pill
-    }
-
-    private func makeSymbolCircle(symbol: String, diameter: CGFloat, fill: UIColor,
-                                  iconTint: UIColor, iconSize: CGFloat,
-                                  weight: UIImage.SymbolWeight = .bold) -> SKNode {
-        let node = SKNode()
-        let bg = SKShapeNode(circleOfRadius: diameter / 2)
-        bg.fillColor = fill
-        bg.strokeColor = .clear
-        node.addChild(bg)
-        let icon = Icons.sprite(symbol, size: iconSize, weight: weight, tint: iconTint)
-        node.addChild(icon)
-        return node
-    }
-
-    private func updateHUD() {
-        movesValueLabel?.text = "\(movesLeft)"
-        goalLabel?.text = "\(min(score, scoreTarget)) / \(scoreTarget)"
-        livesLabel?.text = "\(lives)/\(livesMax)"
-        totalLabel?.text = "\(totalScore)"
-        cashLabel?.text = "\(cash)"
-
-        if let track = progressTrack, let fill = progressFill {
-            let frac = min(1.0, CGFloat(score) / CGFloat(scoreTarget))
-            let trackW = track.frame.width
-            fill.removeAllActions()
-            fill.run(.scaleX(to: max(0.0001, frac), duration: 0.18))
-            fill.position.x = -trackW / 2 + trackW * frac / 2
+    /// Three orthogonal mastery medals computed at the end of a winning attempt.
+    /// They reward distinct ways to play well — clean (no boosters), efficient
+    /// (lots of moves spare), and dominant (overshoot the objective).
+    func computeMedals(effectiveMovesLeft: Int) -> Persistence.MedalSet {
+        let noBoosters = !boosterUsedThisAttempt
+        let movesToSpare = movesAtStart > 0 &&
+            Double(effectiveMovesLeft) >= Double(movesAtStart) * 0.30
+        let overshotGoal: Bool
+        switch levelConfig.goal {
+        case .score:
+            overshotGoal = score >= scoreTarget * 2
+        case .clearBlockers:
+            // No more blockers AND at least 40% of moves still in hand.
+            overshotGoal = remainingBlockerCount() == 0 &&
+                Double(effectiveMovesLeft) >= Double(movesAtStart) * 0.40
+        case .collectColor(_, let count):
+            overshotGoal = collectedGoalTiles >= count * 2
+        case .createSpecials(let count):
+            overshotGoal = createdSpecials >= count * 2
+        case .detonateBombs(let count):
+            overshotGoal = detonatedBombs >= count * 2
+        case .collectIngredients(let count):
+            overshotGoal = collectedIngredients >= count * 2
+        case .collectKeys(let count):
+            overshotGoal = collectedKeys >= count * 2
+        case .openChests(let count):
+            overshotGoal = openedChests >= count * 2
+        case .collectIngredientsAndKeys(let ingredients, let keys):
+            overshotGoal = collectedIngredients >= ingredients * 2 && collectedKeys >= keys * 2
         }
+        return Persistence.MedalSet(noBoosters: noBoosters,
+                                    movesToSpare: movesToSpare,
+                                    overshotGoal: overshotGoal)
     }
 
     // MARK: - Board layout
 
-    private func layoutBoard() {
+    func layoutBoard() {
         let headerH: CGFloat = 170
         let footerH: CGFloat = 180
         let headerBottom = size.height / 2 - safeTop - 8 - headerH
@@ -688,7 +834,7 @@ final class GameScene: SKScene {
         let safeWidth = size.width - pad * 2
         let safeHeight = (headerBottom - footerTop) - 16
         let side = min(safeWidth, safeHeight)
-        gap = side * 0.012
+        gap = Persistence.shapedBoard ? 0 : side * 0.012
         tileSize = (side - gap * CGFloat(cols + 1)) / CGFloat(cols)
         let boardSide = tileSize * CGFloat(cols) + gap * CGFloat(cols + 1)
 
@@ -699,22 +845,164 @@ final class GameScene: SKScene {
         )
 
         worldNode.childNode(withName: "boardBackdrop")?.removeFromParent()
-        let bg = SKShapeNode(rectOf: CGSize(width: boardSide + 12, height: boardSide + 12), cornerRadius: 22)
-        bg.name = "boardBackdrop"
-        bg.position = CGPoint(x: 0, y: centerY)
-        bg.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.92)
-        bg.strokeColor = UIColor(white: 1, alpha: 0.08)
-        bg.lineWidth = 1
-        bg.zPosition = -10
-        worldNode.addChild(bg)
+        worldNode.childNode(withName: "shapeMat")?.removeFromParent()
+        worldNode.childNode(withName: "tileCornerFillers")?.removeFromParent()
+        worldNode.childNode(withName: "mechanicsLayer")?.removeFromParent()
+        if Persistence.shapedBoard {
+            buildShapeMat()
+            buildInteriorCornerFillers()
+        } else {
+            let bg = SKShapeNode(rectOf: CGSize(width: boardSide + 12, height: boardSide + 12), cornerRadius: 22)
+            bg.name = "boardBackdrop"
+            bg.position = CGPoint(x: 0, y: centerY)
+            bg.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.92)
+            bg.strokeColor = UIColor(white: 1, alpha: 0.08)
+            bg.lineWidth = 1
+            bg.zPosition = -10
+            worldNode.addChild(bg)
+        }
+        buildMechanicsLayer()
     }
 
-    private func point(forRow r: Int, col c: Int) -> CGPoint {
+    func buildMechanicsLayer() {
+        guard !levelConfig.layout.portalPairs.isEmpty || !levelConfig.layout.conveyorBelts.isEmpty else { return }
+        let layer = SKNode()
+        layer.name = "mechanicsLayer"
+        layer.zPosition = -5
+
+        for belt in levelConfig.layout.conveyorBelts {
+            guard belt.row >= 0, belt.row < rows else { continue }
+            for c in 0..<cols where levelConfig.layout.mask?[belt.row][c] ?? true {
+                let tile = SKShapeNode(rectOf: CGSize(width: tileSize * 0.82, height: tileSize * 0.28),
+                                       cornerRadius: tileSize * 0.12)
+                tile.fillColor = UIColor(hex: "#22D3EE").withAlphaComponent(0.20)
+                tile.strokeColor = UIColor(hex: "#67E8F9").withAlphaComponent(0.42)
+                tile.lineWidth = 1
+                tile.position = point(forRow: belt.row, col: c)
+                layer.addChild(tile)
+
+                let arrow = Icons.sprite(belt.direction >= 0 ? "arrow.right" : "arrow.left",
+                                         size: tileSize * 0.22,
+                                         weight: .bold,
+                                         tint: UIColor(hex: "#E0F2FE"))
+                arrow.position = tile.position
+                layer.addChild(arrow)
+            }
+        }
+
+        for pair in levelConfig.layout.portalPairs {
+            for (pos, tint) in [(pair.from, UIColor(hex: "#A78BFA")), (pair.to, UIColor(hex: "#22D3EE"))] {
+                guard pos.r >= 0, pos.r < rows, pos.c >= 0, pos.c < cols else { continue }
+                let ring = SKShapeNode(circleOfRadius: tileSize * 0.42)
+                ring.fillColor = tint.withAlphaComponent(0.12)
+                ring.strokeColor = tint.withAlphaComponent(0.85)
+                ring.lineWidth = 2
+                ring.glowWidth = 4
+                ring.position = point(forRow: pos.r, col: pos.c)
+                layer.addChild(ring)
+                ring.run(.repeatForever(.sequence([
+                    .scale(to: 1.10, duration: 0.8),
+                    .scale(to: 1.0, duration: 0.8)
+                ])))
+            }
+        }
+
+        worldNode.addChild(layer)
+    }
+
+    /// Build a connected backdrop that hugs the playable cells. Each cell gets
+    /// a rounded square slightly larger than `tileSize` so adjacent ones merge
+    /// into a single shape — mimicking the Candy Crush mat look.
+    func buildShapeMat() {
+        let mat = SKNode()
+        mat.name = "shapeMat"
+        mat.zPosition = -10
+        let radius = tileSize * 0.22
+        // pad must be ≥ 2r·(1 − 1/√2) ≈ 0.59·r so adjacent rounded mats overlap
+        // enough to cover the diamond gap where four corners meet.
+        let pad: CGFloat = max(6, radius * 0.7)
+        let mask = levelConfig.layout.mask
+        let fill = UIColor(hex: "#0F172A").withAlphaComponent(0.92)
+        for r in 0..<rows {
+            for c in 0..<cols {
+                if let m = mask, !m[r][c] { continue }
+                let p = point(forRow: r, col: c)
+                let cell = SKShapeNode(
+                    rectOf: CGSize(width: tileSize + pad, height: tileSize + pad),
+                    cornerRadius: radius
+                )
+                cell.fillColor = fill
+                cell.strokeColor = .clear
+                cell.position = p
+                mat.addChild(cell)
+
+                // Sharp filler squares between adjacent playable cells erase
+                // the residual diamond gaps without rounding the outer edges.
+                let inset = tileSize * 0.5
+                if c + 1 < cols, mask?[r][c + 1] ?? true {
+                    let bridge = SKShapeNode(rectOf: CGSize(width: pad + 2, height: tileSize))
+                    bridge.fillColor = fill
+                    bridge.strokeColor = .clear
+                    bridge.position = CGPoint(x: p.x + inset, y: p.y)
+                    mat.addChild(bridge)
+                }
+                if r + 1 < rows, mask?[r + 1][c] ?? true {
+                    let bridge = SKShapeNode(rectOf: CGSize(width: tileSize, height: pad + 2))
+                    bridge.fillColor = fill
+                    bridge.strokeColor = .clear
+                    bridge.position = CGPoint(x: p.x, y: p.y - inset)
+                    mat.addChild(bridge)
+                }
+            }
+        }
+        worldNode.addChild(mat)
+    }
+
+    /// Fill only the tiny internal junctions where four rounded playable tiles meet.
+    /// This keeps shaped-board silhouettes intact while removing accidental-looking holes.
+    func buildInteriorCornerFillers() {
+        guard rows > 1, cols > 1 else { return }
+        let layer = SKNode()
+        layer.name = "tileCornerFillers"
+        layer.zPosition = -1
+        let mask = levelConfig.layout.mask
+        let fill = Persistence.highContrast ? UIColor.white : skin.tileBorder
+        let fillerSide = max(6, tileSize * 0.26)
+
+        func isPlayable(_ r: Int, _ c: Int) -> Bool {
+            mask?[r][c] ?? true
+        }
+
+        for r in 0..<(rows - 1) {
+            for c in 0..<(cols - 1) {
+                guard isPlayable(r, c),
+                      isPlayable(r, c + 1),
+                      isPlayable(r + 1, c),
+                      isPlayable(r + 1, c + 1) else { continue }
+
+                let topLeft = point(forRow: r, col: c)
+                let bottomRight = point(forRow: r + 1, col: c + 1)
+                let filler = SKShapeNode(rectOf: CGSize(width: fillerSide, height: fillerSide),
+                                         cornerRadius: fillerSide * 0.18)
+                filler.fillColor = fill
+                filler.strokeColor = .clear
+                filler.position = CGPoint(x: (topLeft.x + bottomRight.x) / 2,
+                                          y: (topLeft.y + bottomRight.y) / 2)
+                layer.addChild(filler)
+            }
+        }
+
+        if !layer.children.isEmpty {
+            worldNode.addChild(layer)
+        }
+    }
+
+    func point(forRow r: Int, col c: Int) -> CGPoint {
         CGPoint(x: boardOrigin.x + CGFloat(c) * (tileSize + gap),
                 y: boardOrigin.y - CGFloat(r) * (tileSize + gap))
     }
 
-    private func cellAt(_ point: CGPoint) -> Pos? {
+    func cellAt(_ point: CGPoint) -> Pos? {
         for r in 0..<rows {
             for c in 0..<cols {
                 let p = self.point(forRow: r, col: c)
@@ -732,18 +1020,450 @@ final class GameScene: SKScene {
 
     // MARK: - Game lifecycle
 
-    private func startNewGame() {
+    func startNewGame() {
         score = 0
         movesLeft = movesAtStart
-        let layout = levelConfig.layout
-        grid = Engine.createInitialGrid(rows: rows, cols: cols, colors: palette, mask: layout.mask)
-        seedBlockers(layout: layout)
-        seedStartingBombs(layout: layout)
+        startingBlockers = 0
+        collectedGoalTiles = 0
+        createdSpecials = 0
+        detonatedBombs = 0
+        collectedIngredients = 0
+        collectedKeys = 0
+        openedChests = 0
+        maxCascadeDepth = 0
+        totalCascadeClears = 0
+        objectiveCompletionShown = false
+        hintShownThisLevel = 0
+        freeStuckReshufflesThisLevel = 0
+        pendingLifeLoss = false
+        continueUsedThisAttempt = false
+        coinPromptShownThisAttempt = false
+        boosterUsedThisAttempt = false
+        undoSnapshot = nil
+        freeUndoUsedThisLevel = false
+        chainTilesCleared = 0
+        chainSpecialsTriggered = 0
+        chainBlockersDamaged = 0
+        lastChainTierFired = 0
+        sugarRushCharged = false
+        preLevelPerkApplied = false
+        preLevelPerkOverlay?.removeFromParent()
+        preLevelPerkOverlay = nil
+        clearGhostPreview()
+        resetSyrupForLevel()
+        resetComboMeter()
+        refreshUndoButton()
+        let usefulMoveScore = openingMoveQualityTarget()
+        let requestedSeed = LevelSeed.liveAttempt(level: levelNumber)
+        let board = LevelBoardFactory.makeInitialBoard(config: levelConfig,
+                                                       seed: requestedSeed,
+                                                       minimumOpeningMoveScore: usefulMoveScore,
+                                                       attempts: 24)
+        levelAttemptSeed = board.seed
+        gameplayRNG = SeededRandomNumberGenerator(seed: levelAttemptSeed ^ 0x7265706C6179)
+        grid = board.grid
+        startingBlockers = remainingBlockerCount()
         rebuildAllNodes()
+        Analytics.track("level_start",
+                        properties: ["level": "\(levelNumber)",
+                                     "moves": "\(movesAtStart)",
+                                     "target": "\(scoreTarget)",
+                                     "goal": "\(levelConfig.goal.title)",
+                                     "difficulty": levelConfig.difficulty.rawValue,
+                                     "modifiers": levelConfig.modifiers.map(\.rawValue).joined(separator: ","),
+                                     "seed": "\(levelAttemptSeed)",
+                                     "opening_move_score": "\(board.openingMoveScore)"])
+        showLevelIntroHints()
+        showPreLevelPerkChoiceIfNeeded()
+        applyFailStreakAssistIfNeeded()
+        scheduleIdleHint()
+    }
+
+    func openingMoveQualityTarget() -> Int {
+        switch levelNumber {
+        case 1...10:
+            return 55
+        case 11...25:
+            return 45
+        case 26...100:
+            return levelConfig.difficulty == .normal ? 38 : 28
+        default:
+            return levelConfig.difficulty == .crownChallenge ? 22 : 30
+        }
+    }
+
+    func showLevelIntroHints() {
+        switch levelNumber {
+        case 1:
+            showTeachingToast(key: "match3", text: String(localized: "Swap candies to match 3."))
+            showGuidedMoveHint(delay: 1.0, reason: "first_match")
+        case 2:
+            // Keep hand-guiding through the first session, not just level 1.
+            showGuidedMoveHint(delay: 1.2, reason: "second_match")
+        case 3:
+            showTeachingToast(key: "combo_tip", text: String(localized: "Line up 4 or more for power-ups!"))
+            showGuidedMoveHint(delay: 1.2, reason: "third_match")
+        case 4:
+            showTeachingToast(key: "striped_intro", text: String(localized: "Match 4 to create stripes."))
+            showGuidedMoveHint(delay: 1.1, reason: "striped_intro")
+        case 5:
+            showTeachingToast(key: "blockers", text: String(localized: "Match beside frost and locks to break them."))
+            showGuidedMoveHint(delay: 1.1, reason: "blockers")
+        case 7:
+            showTeachingToast(key: "color_bomb_intro", text: String(localized: "Match 5 straight for a color bomb."))
+            showGuidedMoveHint(delay: 1.1, reason: "color_bomb_intro")
+        case 11:
+            showTeachingToast(key: "wrapped_intro", text: String(localized: "T and L matches create wrapped blasts."))
+            showGuidedMoveHint(delay: 1.1, reason: "wrapped_intro")
+        case 12:
+            showTeachingToast(key: "booster_intro", text: String(localized: "Use boosters when one move can save the board."))
+        case 21:
+            showTeachingToast(key: "jelly_intro_level", text: String(localized: "Jelly clears only when you match on top."))
+            showGuidedMoveHint(delay: 1.1, reason: "jelly_intro")
+        default:
+            if levelConfig.layout.jellyCount > 0 {
+                showTeachingToast(key: "jelly_intro", text: String(localized: "Jelly needs a direct match on top."))
+            } else if levelConfig.layout.crateCount > 0 {
+                showTeachingToast(key: "crate_intro", text: String(localized: "Sugar crates take three direct hits."))
+            } else if levelConfig.layout.colorLockCount > 0 {
+                showTeachingToast(key: "color_lock_intro", text: String(localized: "Color locks open with their fruit."))
+            } else if levelConfig.layout.chestCount > 0 || levelConfig.layout.keyCount > 0 {
+                showTeachingToast(key: "chest_key_intro", text: String(localized: "Open chests with nearby matches or collected keys."))
+            } else if levelConfig.layout.vineCount > 0 {
+                showTeachingToast(key: "vine_intro", text: String(localized: "Cut vines with direct matches or hammers."))
+            } else if !levelConfig.layout.portalPairs.isEmpty {
+                showTeachingToast(key: "portal_intro", text: String(localized: "Portals swap candies after gravity."))
+            } else if !levelConfig.layout.conveyorBelts.isEmpty {
+                showTeachingToast(key: "conveyor_intro", text: String(localized: "Conveyors shift candies after gravity."))
+            }
+            if let modifier = levelConfig.modifiers.first {
+                showTeachingToast(key: "modifier_\(modifier.rawValue)", text: modifier.summary)
+            }
+            if levelConfig.layout.countdownCount > 0 {
+                showTeachingToast(key: "countdown_intro", text: String(localized: "Clear fuses before they hit zero — each blast costs a move!"))
+            }
+            if levelConfig.layout.blockerCount > 10 {
+                showTeachingToast(key: "hard_blockers", text: String(localized: "Special combos are strongest against blockers."))
+            }
+        }
+    }
+
+    func showGuidedMoveHint(delay: TimeInterval, reason: String) {
+        guard Engine.findHintMove(grid) != nil else { return }
+        guard !Persistence.hasSeenHint("guided_\(reason)") else { return }
+        Persistence.markHintSeen("guided_\(reason)")
+        run(.sequence([
+            .wait(forDuration: delay),
+            .run { [weak self] in self?.showIdleHint(force: true) }
+        ]))
+    }
+
+    func showSpecialHint(_ special: Special) {
+        switch special {
+        case .stripedRow, .stripedCol:
+            showTeachingToast(key: "striped_created", text: String(localized: "Swap stripes into a match to clear a line."))
+        case .wrapped:
+            showTeachingToast(key: "wrapped_created", text: String(localized: "Wrapped candy clears a 3x3 blast."))
+        case .colorBomb:
+            showTeachingToast(key: "color_bomb_created", text: String(localized: "Swap a color bomb with any candy."))
+        case .bomb:
+            showTeachingToast(key: "bomb_created", text: String(localized: "Bombs clear a wide area. Save them for blockers."))
+        }
+    }
+
+    func showTeachingToast(key: String, text: String, delay: TimeInterval = 0.45) {
+        guard !Persistence.hasSeenHint(key) else { return }
+        Persistence.markHintSeen(key)
+        run(.wait(forDuration: delay)) { [weak self] in
+            guard let self else { return }
+            self.showStatusToast(text)
+        }
+    }
+
+    func showStatusToast(_ text: String) {
+        childNode(withName: "teachingToast")?.removeFromParent()
+
+        let width = min(size.width - 34, max(258, CGFloat(text.count) * 6.8 + 34))
+        let toast = SKNode()
+        toast.name = "teachingToast"
+        toast.zPosition = 1400
+        toast.position = CGPoint(x: 0, y: size.height / 2 - safeTop - 124)
+        toast.alpha = 0
+
+        let bg = SKShapeNode(rectOf: CGSize(width: width, height: 40), cornerRadius: 20)
+        bg.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.88)
+        bg.strokeColor = UIColor.white.withAlphaComponent(0.16)
+        bg.lineWidth = 1
+        toast.addChild(bg)
+
+        let label = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+        label.text = text
+        label.fontSize = 12
+        label.fontColor = .white
+        label.verticalAlignmentMode = .center
+        label.horizontalAlignmentMode = .center
+        toast.addChild(label)
+
+        addChild(toast)
+        toast.run(.sequence([
+            .group([.fadeIn(withDuration: 0.18), .moveBy(x: 0, y: -4, duration: 0.18)]),
+            .wait(forDuration: 2.4),
+            .group([.fadeOut(withDuration: 0.2), .moveBy(x: 0, y: 8, duration: 0.2)]),
+            .removeFromParent()
+        ]))
+    }
+
+    func showPreLevelPerkChoiceIfNeeded() {
+        guard preLevelPerkOverlay == nil, !preLevelPerkApplied else { return }
+        guard !levelConfig.modifiers.contains(.noBoosters) else { return }
+        guard levelConfig.isBoss || levelConfig.difficulty == .hard || levelConfig.difficulty == .superHard || levelConfig.difficulty == .crownChallenge else { return }
+        guard size.width > 120, size.height > 260 else {
+            run(.sequence([
+                .wait(forDuration: 0.05),
+                .run { [weak self] in self?.showPreLevelPerkChoiceIfNeeded() }
+            ]), withKey: "deferPreLevelPerk")
+            return
+        }
+
+        let overlayZ: CGFloat = 4_000
+        let overlay = SKNode()
+        overlay.name = "preLevelPerkOverlay"
+        overlay.zPosition = overlayZ
+
+        let scrim = SKShapeNode(rectOf: size)
+        scrim.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.58)
+        scrim.strokeColor = .clear
+        scrim.name = "preLevelPerkScrim"
+        scrim.zPosition = overlayZ
+        overlay.addChild(scrim)
+
+        let cardW = min(size.width - 52, 318)
+        let cardH: CGFloat = 300
+        let cardY = max(-24, min(34, -safeTop * 0.25))
+
+        let shadow = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 24)
+        shadow.fillColor = UIColor(white: 0, alpha: 0.18)
+        shadow.strokeColor = .clear
+        shadow.position = CGPoint(x: 0, y: cardY - 8)
+        shadow.zPosition = overlayZ + 1
+        overlay.addChild(shadow)
+
+        let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 24)
+        card.fillColor = .white
+        card.strokeColor = UIColor(hex: "#D9E3EF")
+        card.lineWidth = 1.5
+        card.name = "preLevelPerkCard"
+        card.position = CGPoint(x: 0, y: cardY)
+        card.zPosition = overlayZ + 2
+        overlay.addChild(card)
+
+        let title = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        title.text = String(localized: "Pick a start perk")
+        title.fontSize = 22
+        title.fontColor = UIColor(hex: "#0F172A")
+        title.verticalAlignmentMode = .center
+        title.position = CGPoint(x: 0, y: cardH / 2 - 42)
+        title.zPosition = overlayZ + 3
+        card.addChild(title)
+
+        let subtitle = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+        subtitle.text = levelConfig.isBoss ? String(localized: "Boss board bonus") : String(localized: "Hard level bonus")
+        subtitle.fontSize = 13
+        subtitle.fontColor = UIColor(hex: "#64748B")
+        subtitle.verticalAlignmentMode = .center
+        subtitle.position = CGPoint(x: 0, y: cardH / 2 - 68)
+        subtitle.zPosition = overlayZ + 3
+        card.addChild(subtitle)
+
+        let options: [(PreLevelPerk, String, String, UIColor)] = [
+            (.bomb, "Start bomb", "One bomb on the board", UIColor(hex: "#F97316")),
+            (.moves, "+3 moves", "Extra room to finish", UIColor(hex: "#EC4899")),
+            (.blockers, "Clear 3", "Remove blockers now", UIColor(hex: "#22C55E"))
+        ]
+
+        for (index, option) in options.enumerated() {
+            let y = CGFloat(40 - index * 70)
+            let button = makePreLevelPerkButton(perk: option.0,
+                                                title: option.1,
+                                                subtitle: option.2,
+                                                color: option.3,
+                                                width: cardW - 34,
+                                                zBase: overlayZ + 4)
+            button.position = CGPoint(x: 0, y: y)
+            card.addChild(button)
+        }
+
+        addChild(overlay)
+        overlay.alpha = 0
+        overlay.run(.fadeIn(withDuration: 0.18))
+        preLevelPerkOverlay = overlay
+    }
+
+    func makePreLevelPerkButton(perk: PreLevelPerk,
+                                        title: String,
+                                        subtitle: String,
+                                        color: UIColor,
+                                        width: CGFloat,
+                                        zBase: CGFloat) -> SKNode {
+        let button = SKNode()
+        button.name = "prePerk:\(perk.rawValue)"
+        button.zPosition = zBase
+
+        let bg = SKShapeNode(rectOf: CGSize(width: width, height: 54), cornerRadius: 20)
+        bg.fillColor = color.withAlphaComponent(0.14)
+        bg.strokeColor = color.withAlphaComponent(0.75)
+        bg.lineWidth = 1.4
+        bg.name = button.name
+        bg.zPosition = zBase
+        button.addChild(bg)
+
+        let dot = SKShapeNode(circleOfRadius: 17)
+        dot.fillColor = color
+        dot.strokeColor = .white
+        dot.lineWidth = 1.5
+        dot.position = CGPoint(x: -width / 2 + 32, y: 0)
+        dot.name = button.name
+        dot.zPosition = zBase + 1
+        button.addChild(dot)
+
+        let symbol = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        switch perk {
+        case .bomb: symbol.text = String(localized: "B")
+        case .moves: symbol.text = "+3"
+        case .blockers: symbol.text = String(localized: "X")
+        }
+        symbol.fontSize = perk == .moves ? 12 : 15
+        symbol.fontColor = .white
+        symbol.verticalAlignmentMode = .center
+        symbol.horizontalAlignmentMode = .center
+        symbol.name = button.name
+        symbol.zPosition = zBase + 2
+        dot.addChild(symbol)
+
+        let titleLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        titleLabel.text = title
+        titleLabel.fontSize = 15
+        titleLabel.fontColor = UIColor(hex: "#0F172A")
+        titleLabel.verticalAlignmentMode = .center
+        titleLabel.horizontalAlignmentMode = .left
+        titleLabel.position = CGPoint(x: -width / 2 + 66, y: 9)
+        titleLabel.name = button.name
+        titleLabel.zPosition = zBase + 2
+        button.addChild(titleLabel)
+
+        let subtitleLabel = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+        subtitleLabel.text = subtitle
+        subtitleLabel.fontSize = 11
+        subtitleLabel.fontColor = UIColor(hex: "#64748B")
+        subtitleLabel.verticalAlignmentMode = .center
+        subtitleLabel.horizontalAlignmentMode = .left
+        subtitleLabel.position = CGPoint(x: -width / 2 + 66, y: -12)
+        subtitleLabel.name = button.name
+        subtitleLabel.zPosition = zBase + 2
+        button.addChild(subtitleLabel)
+
+        return button
+    }
+
+    func handlePreLevelPerkTap(at point: CGPoint) {
+        guard let overlay = preLevelPerkOverlay else { return }
+        let local = overlay.convert(point, from: self)
+        var node: SKNode? = overlay.atPoint(local)
+        while let current = node {
+            if let name = current.name,
+               name.hasPrefix("prePerk:"),
+               let perk = PreLevelPerk(rawValue: String(name.dropFirst("prePerk:".count))) {
+                applyPreLevelPerk(perk)
+                return
+            }
+            node = current.parent
+        }
+        Effects.haptic(.soft)
+    }
+
+    func applyPreLevelPerk(_ perk: PreLevelPerk) {
+        preLevelPerkApplied = true
+        preLevelPerkOverlay?.run(.sequence([.fadeOut(withDuration: 0.14), .removeFromParent()]))
+        preLevelPerkOverlay = nil
+
+        switch perk {
+        case .bomb:
+            applyStartingBombPerk()
+        case .moves:
+            movesLeft += 3
+            Effects.showComboBanner(text: String(localized: "+3 MOVES"), color: UIColor(hex: "#EC4899"), in: self)
+        case .blockers:
+            applyRemoveBlockersPerk()
+        }
+
+        Analytics.track("pre_level_perk",
+                        properties: ["level": "\(levelNumber)",
+                                     "perk": perk.rawValue])
+        Effects.haptic(.medium)
+        Effects.notify(.success)
+    }
+
+    /// Quiet dynamic-difficulty mercy: after repeated losses on a level, hand the
+    /// player a starting bomb (and extra moves once they're really stuck) so a
+    /// spike level doesn't become a churn wall. Announced, never silent. Skipped
+    /// when the pre-level perk picker is already offering a choice.
+    func applyFailStreakAssistIfNeeded() {
+        guard preLevelPerkOverlay == nil, !preLevelPerkApplied else { return }
+        let fails = Analytics.levelStats(for: levelNumber)["fails"] ?? 0
+        guard fails >= 3 else { return }
+        if fails >= 5 { movesLeft += 3 }
+        applyStartingBombPerk(banner: String(localized: "HERE'S A HAND!"))
+        Effects.notify(.success)
+        Analytics.track("fail_streak_assist",
+                        properties: ["level": "\(levelNumber)", "fails": "\(fails)"])
+    }
+
+    func applyStartingBombPerk(banner: String = String(localized: "START BOMB!")) {
+        var candidates: [Pos] = []
+        for r in 0..<rows {
+            for c in 0..<cols {
+                guard let cell = grid[r][c],
+                      cell.blocker == nil,
+                      cell.kind == .normal else { continue }
+                candidates.append(Pos(r: r, c: c))
+            }
+        }
+        guard let p = candidates.randomElement(using: &gameplayRNG) else { return }
+        grid[p.r][p.c]?.special = .bomb
+        refreshNode(at: p)
+        if let node = nodes[p.r][p.c] {
+            node.run(.sequence([.scale(to: 1.16, duration: 0.10),
+                                .scale(to: 1.0, duration: 0.14)]))
+        }
+        Effects.showComboBanner(text: banner, color: UIColor(hex: "#F97316"), in: self)
+    }
+
+    func applyRemoveBlockersPerk() {
+        var candidates: [Pos] = []
+        for r in 0..<rows {
+            for c in 0..<cols where grid[r][c]?.blocker != nil {
+                candidates.append(Pos(r: r, c: c))
+            }
+        }
+        candidates.shuffle(using: &gameplayRNG)
+        let chosen = Set(candidates.prefix(3))
+        var opened: Set<Pos> = []
+        for p in chosen {
+            if grid[p.r][p.c]?.blocker?.type == .chest {
+                opened.insert(p)
+            }
+            grid[p.r][p.c]?.blocker = nil
+            refreshNode(at: p)
+        }
+        if !opened.isEmpty {
+            openedChests += opened.count
+            awardChestRewards(opened: opened)
+        }
+        Effects.showComboBanner(text: String(localized: "BLOCKERS CLEARED!"), color: UIColor(hex: "#22C55E"), in: self)
     }
 
     /// Randomly tag playable cells with ice / lock blockers so the level reads as harder.
-    private func seedBlockers(layout: LevelLayout) {
+    func seedBlockers(layout: LevelLayout) {
         guard layout.iceCount > 0 || layout.lockCount > 0 else { return }
         var candidates: [Pos] = []
         for r in 0..<rows {
@@ -764,7 +1484,144 @@ final class GameScene: SKScene {
         }
     }
 
-    private func seedStartingBombs(layout: LevelLayout) {
+    func seedAdvancedMechanics(layout: LevelLayout) {
+        guard layout.jellyCount > 0 ||
+              layout.crateCount > 0 ||
+              layout.colorLockCount > 0 ||
+              layout.chocolateCount > 0 ||
+              layout.chestCount > 0 ||
+              layout.vineCount > 0 else { return }
+        var candidates: [Pos] = []
+        for r in 0..<rows {
+            for c in 0..<cols where grid[r][c] != nil && grid[r][c]?.blocker == nil {
+                candidates.append(Pos(r: r, c: c))
+            }
+        }
+        candidates.shuffle()
+
+        var index = 0
+        func nextPosition() -> Pos? {
+            guard index < candidates.count else { return nil }
+            defer { index += 1 }
+            return candidates[index]
+        }
+
+        for _ in 0..<layout.jellyCount {
+            guard let p = nextPosition() else { break }
+            grid[p.r][p.c]?.blocker = Blocker(type: .jelly, hits: 1)
+        }
+
+        for _ in 0..<layout.crateCount {
+            guard let p = nextPosition() else { break }
+            grid[p.r][p.c]?.blocker = Blocker(type: .crate, hits: 3)
+        }
+
+        for i in 0..<layout.colorLockCount {
+            guard let p = nextPosition() else { break }
+            let required = palette[i % palette.count]
+            grid[p.r][p.c]?.color = required
+            grid[p.r][p.c]?.blocker = Blocker(type: .colorLock,
+                                              hits: 1,
+                                              requiredColor: required)
+        }
+
+        for _ in 0..<layout.chocolateCount {
+            guard let p = nextPosition() else { break }
+            grid[p.r][p.c]?.blocker = Blocker(type: .chocolate, hits: 1)
+        }
+        for _ in 0..<layout.chestCount {
+            guard let p = nextPosition() else { break }
+            grid[p.r][p.c]?.blocker = Blocker(type: .chest, hits: 1)
+        }
+        for _ in 0..<layout.vineCount {
+            guard let p = nextPosition() else { break }
+            grid[p.r][p.c]?.blocker = Blocker(type: .vine, hits: 1)
+        }
+    }
+
+    /// Once per resolved turn: pick one chocolate to spread to a neighbor,
+    /// unless the player damaged a chocolate this turn. Animates the new
+    /// blocker into place by refreshing the affected node.
+    func applyChocolateSpreadIfDue() {
+        guard !chocolateDamagedThisTurn else { return }
+        let attempts = levelConfig.modifiers.contains(.chocolateSpreadsFaster) ? 2 : 1
+        var spreadTargets: [Pos] = []
+        for _ in 0..<attempts {
+            let (newGrid, spreadTo) = Engine.spreadChocolate(grid, rng: &gameplayRNG)
+            guard let target = spreadTo else { break }
+            grid = newGrid
+            spreadTargets.append(target)
+        }
+        guard !spreadTargets.isEmpty else { return }
+        for target in spreadTargets {
+            refreshNode(at: target)
+            if let node = nodes[target.r][target.c] {
+                node.run(.sequence([
+                    .scale(to: 1.15, duration: 0.10),
+                    .scale(to: 1.0, duration: 0.12)
+                ]))
+            }
+        }
+        Audio.shared.play(.crate)
+        Effects.haptic(.light)
+        Analytics.track("chocolate_spread",
+                        properties: ["level": "\(levelNumber)",
+                                     "count": "\(spreadTargets.count)"])
+    }
+
+    /// Per-turn fuse tick: every `.countdown` blocker counts down one. When a fuse
+    /// hits zero it detonates — costs the player one move and re-arms — pressuring
+    /// them to defuse it (by matching it) before it blows. Deliberately not an
+    /// instant-lose: the move cost is the threat, and the normal end-of-level
+    /// check resolves any resulting loss fairly.
+    func tickCountdownFusesIfNeeded() {
+        var detonatedAt: Pos?
+        for r in 0..<rows {
+            for c in 0..<cols {
+                guard var cell = grid[r][c],
+                      cell.blocker?.type == .countdown,
+                      let count = cell.blocker?.countdown else { continue }
+                let next = count - 1
+                cell.blocker?.countdown = next <= 0 ? countdownFuseRearm : next
+                if next <= 0 { detonatedAt = Pos(r: r, c: c) }
+                grid[r][c] = cell
+                refreshNode(at: Pos(r: r, c: c))
+            }
+        }
+        guard let p = detonatedAt else { return }
+        movesLeft = max(0, movesLeft - 1)
+        if let node = nodes[p.r][p.c] { Effects.shake(node, intensity: 7, duration: 0.3) }
+        Effects.showComboBanner(text: String(localized: "FUSE BLEW!  -1 move"),
+                                color: UIColor(hex: "#EF4444"), in: self)
+        Effects.notify(.warning)
+        Audio.shared.play(.bomb)
+        Analytics.track("countdown_fuse_blew", properties: ["level": "\(levelNumber)"])
+    }
+
+    /// Seed ingredient cells near the top of distinct columns. They drop with
+    /// gravity and are collected when they hit the bottom playable row.
+    func seedIngredients(layout: LevelLayout) {
+        guard layout.ingredientCount > 0 else { return }
+        var columns = Array(0..<cols).filter { c in
+            (0..<rows).contains { r in grid[r][c] != nil && grid[r][c]?.blocker == nil }
+        }
+        columns.shuffle()
+
+        var seeded = 0
+        for col in columns where seeded < layout.ingredientCount {
+            // Top-most playable, non-blocker row for this column.
+            var topRow = -1
+            for r in 0..<rows {
+                if grid[r][col] != nil, grid[r][col]?.blocker == nil { topRow = r; break }
+            }
+            guard topRow >= 0 else { continue }
+            grid[topRow][col]?.kind = .ingredient
+            grid[topRow][col]?.special = nil
+            seeded += 1
+        }
+    }
+
+    func seedStartingBombs(layout: LevelLayout) {
         guard layout.startingBombs > 0 else { return }
         var candidates: [Pos] = []
         for r in 0..<rows {
@@ -778,7 +1635,13 @@ final class GameScene: SKScene {
         }
     }
 
-    private func rebuildAllNodes() {
+    func remainingBlockerCount() -> Int {
+        grid.reduce(0) { partial, row in
+            partial + row.filter { $0?.blocker != nil }.count
+        }
+    }
+
+    func rebuildAllNodes() {
         for row in nodes { for n in row { n?.removeFromParent() } }
         nodes = Array(repeating: Array(repeating: nil, count: cols), count: rows)
         for r in 0..<rows {
@@ -792,31 +1655,127 @@ final class GameScene: SKScene {
         }
     }
 
-    private func makeTileNode(for cell: Cell) -> SKNode {
+    func makeTileNode(for cell: Cell) -> SKNode {
         let container = SKNode()
         let body = SKShapeNode(rectOf: CGSize(width: tileSize, height: tileSize), cornerRadius: tileSize * 0.22)
         body.fillColor = skin.tileBg
-        body.strokeColor = skin.tileBorder
-        body.lineWidth = 1
+        body.strokeColor = Persistence.highContrast ? .white : skin.tileBorder
+        body.lineWidth = Persistence.highContrast ? 2 : 1
         body.name = "body"
         container.addChild(body)
 
         let emoji = SKSpriteNode(texture: Theme.emojiTexture(forColor: cell.color))
         emoji.size = CGSize(width: tileSize * 0.78, height: tileSize * 0.78)
         emoji.name = "emoji"
-        emoji.alpha = cell.blocker != nil ? 0.55 : 1.0
+        if let blocker = cell.blocker {
+            switch blocker.type {
+            case .lock, .colorLock:
+                emoji.alpha = 0.88
+            case .ice, .jelly, .syrup, .countdown:
+                emoji.alpha = 0.78
+            case .crate, .chocolate, .chest, .vine:
+                emoji.alpha = 0.52
+            }
+        } else {
+            emoji.alpha = cell.special == .colorBomb ? 0.2 : 1.0
+        }
         container.addChild(emoji)
+
+        // Ingredient overlay — a fruit basket "halo" so players can spot the
+        // tiles that need to fall to the bottom.
+        if cell.kind == .ingredient {
+            let halo = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
+                                   cornerRadius: tileSize * 0.28)
+            halo.fillColor = .clear
+            halo.strokeColor = UIColor(hex: "#34D399").withAlphaComponent(0.95)
+            halo.lineWidth = 3
+            halo.glowWidth = 4
+            halo.zPosition = 7
+            container.addChild(halo)
+            halo.run(.repeatForever(.sequence([
+                .scale(to: 1.05, duration: 0.6),
+                .scale(to: 1.0,  duration: 0.6)
+            ])))
+
+            let basket = Icons.sprite("basket.fill",
+                                      size: tileSize * 0.30,
+                                      weight: .bold,
+                                      tint: UIColor(hex: "#34D399"))
+            basket.position = CGPoint(x: tileSize * 0.30, y: -tileSize * 0.30)
+            basket.zPosition = 8
+            container.addChild(basket)
+        }
+
+        if cell.kind == .key {
+            let halo = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
+                                   cornerRadius: tileSize * 0.28)
+            halo.fillColor = UIColor(hex: "#FEF3C7").withAlphaComponent(0.16)
+            halo.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.98)
+            halo.lineWidth = 3
+            halo.glowWidth = 5
+            halo.zPosition = 7
+            container.addChild(halo)
+            halo.run(.repeatForever(.sequence([
+                .scale(to: 1.06, duration: 0.55),
+                .scale(to: 1.0,  duration: 0.55)
+            ])))
+
+            let key = Icons.sprite("key.fill",
+                                   size: tileSize * 0.32,
+                                   weight: .bold,
+                                   tint: UIColor(hex: "#FACC15"))
+            key.position = CGPoint(x: tileSize * 0.29, y: -tileSize * 0.29)
+            key.zPosition = 8
+            container.addChild(key)
+        }
+
+        if Persistence.candyLabels {
+            let labels = ["O", "G", "B", "A", "Y", "C"]
+            let idx = Theme.fruitIndex(forColor: cell.color) % labels.count
+            let tag = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+            tag.text = labels[idx]
+            tag.fontSize = max(10, tileSize * 0.22)
+            tag.fontColor = .white
+            tag.verticalAlignmentMode = .center
+            tag.horizontalAlignmentMode = .center
+            tag.position = CGPoint(x: tileSize * 0.28, y: -tileSize * 0.28)
+            tag.zPosition = 6
+
+            let bg = SKShapeNode(circleOfRadius: max(8, tileSize * 0.16))
+            bg.fillColor = UIColor(white: 0, alpha: 0.62)
+            bg.strokeColor = .white.withAlphaComponent(0.75)
+            bg.lineWidth = 1
+            bg.position = tag.position
+            bg.zPosition = 5
+            container.addChild(bg)
+            container.addChild(tag)
+        }
+
+        // Color-blind pattern overlay — a unique geometric marker per color,
+        // placed in the top-left so it doesn't fight the fruit emoji or the
+        // optional candy label in the bottom-right.
+        if Persistence.colorBlindPatterns {
+            let marker = makeColorBlindMarker(for: cell.color)
+            marker.position = CGPoint(x: -tileSize * 0.28, y: tileSize * 0.28)
+            marker.zPosition = 7
+            container.addChild(marker)
+        }
 
         // Ice overlay — translucent icy blue + snowflake symbol
         if let blocker = cell.blocker, blocker.type == .ice {
+            let strength: CGFloat = blocker.hits > 1 ? 0.30 : 0.18
             let ice = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
                                   cornerRadius: tileSize * 0.22)
-            ice.fillColor = UIColor(hex: "#7DD3FC").withAlphaComponent(0.42)
-            ice.strokeColor = UIColor(hex: "#3B82F6").withAlphaComponent(0.5)
+            ice.fillColor = UIColor(hex: "#7DD3FC").withAlphaComponent(strength)
+            ice.strokeColor = UIColor(hex: "#38BDF8").withAlphaComponent(0.75)
             ice.lineWidth = 2
             ice.glowWidth = 2
             ice.zPosition = 4
             container.addChild(ice)
+
+            if blocker.hits > 1 {
+                addCrackLines(to: container, tint: UIColor(hex: "#E0F2FE"), alpha: 0.90)
+            }
 
             let frost = Icons.sprite("snowflake",
                                      size: tileSize * 0.42,
@@ -832,23 +1791,227 @@ final class GameScene: SKScene {
             _ = blocker
         }
 
-        // Lock overlay — dark scrim + SF Symbol lock
+        // Lock overlay — readable tint + corner lock, leaving the fruit visible.
         if let blocker = cell.blocker, blocker.type == .lock {
             let scrim = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
                                     cornerRadius: tileSize * 0.22)
-            scrim.fillColor = UIColor(white: 0, alpha: 0.45)
-            scrim.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.5)
+            scrim.fillColor = UIColor(hex: "#FEF3C7").withAlphaComponent(0.10)
+            scrim.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.95)
             scrim.lineWidth = 2
+            scrim.glowWidth = 1.5
             scrim.zPosition = 4
             container.addChild(scrim)
 
+            let badge = SKShapeNode(circleOfRadius: tileSize * 0.17)
+            badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.78)
+            badge.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.98)
+            badge.lineWidth = 1.2
+            badge.position = CGPoint(x: -tileSize * 0.27, y: -tileSize * 0.27)
+            badge.zPosition = 5
+            container.addChild(badge)
+
             let lock = Icons.sprite("lock.fill",
-                                    size: tileSize * 0.45,
+                                    size: tileSize * 0.20,
                                     weight: .heavy,
-                                    tint: UIColor(hex: "#FACC15"))
-            lock.zPosition = 5
+                                    tint: .white)
+            lock.position = badge.position
+            lock.zPosition = 6
             container.addChild(lock)
             _ = blocker
+        }
+
+        if let blocker = cell.blocker, blocker.type == .jelly {
+            let jelly = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
+                                    cornerRadius: tileSize * 0.28)
+            jelly.fillColor = UIColor(hex: "#F9A8D4").withAlphaComponent(0.38)
+            jelly.strokeColor = UIColor(hex: "#EC4899").withAlphaComponent(0.70)
+            jelly.lineWidth = 2
+            jelly.glowWidth = 2
+            jelly.zPosition = 4
+            container.addChild(jelly)
+
+            let drop = Icons.sprite("drop.fill",
+                                    size: tileSize * 0.34,
+                                    weight: .bold,
+                                    tint: .white)
+            drop.alpha = 0.86
+            drop.zPosition = 5
+            container.addChild(drop)
+        }
+
+        if let blocker = cell.blocker, blocker.type == .crate {
+            let crate = SKShapeNode(rectOf: CGSize(width: tileSize - 5, height: tileSize - 5),
+                                    cornerRadius: tileSize * 0.12)
+            crate.fillColor = UIColor(hex: "#92400E").withAlphaComponent(0.62)
+            crate.strokeColor = UIColor(hex: "#FDE68A").withAlphaComponent(0.82)
+            crate.lineWidth = 2
+            crate.zPosition = 4
+            container.addChild(crate)
+
+            for angle in [CGFloat.pi / 4, -CGFloat.pi / 4] {
+                let plank = SKShapeNode(rectOf: CGSize(width: tileSize * 0.78, height: tileSize * 0.10),
+                                        cornerRadius: tileSize * 0.04)
+                plank.fillColor = UIColor(hex: "#F59E0B").withAlphaComponent(0.82)
+                plank.strokeColor = .clear
+                plank.zRotation = angle
+                plank.zPosition = 5
+                container.addChild(plank)
+            }
+
+            let hits = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+            hits.text = "\(max(1, blocker.hits))"
+            hits.fontSize = max(11, tileSize * 0.24)
+            hits.fontColor = .white
+            hits.verticalAlignmentMode = .center
+            hits.horizontalAlignmentMode = .center
+            hits.zPosition = 6
+            container.addChild(hits)
+        }
+
+        if let blocker = cell.blocker, blocker.type == .chocolate {
+            let cocoa = SKShapeNode(rectOf: CGSize(width: tileSize - 3, height: tileSize - 3),
+                                    cornerRadius: tileSize * 0.20)
+            cocoa.fillColor = UIColor(hex: "#3B1F0E").withAlphaComponent(0.92)
+            cocoa.strokeColor = UIColor(hex: "#7C3A12").withAlphaComponent(0.95)
+            cocoa.lineWidth = 2
+            cocoa.zPosition = 4
+            container.addChild(cocoa)
+
+            // Flecks of "chocolate chunks" — small round shapes scattered.
+            for offset in [CGPoint(x: -tileSize * 0.18, y: tileSize * 0.10),
+                           CGPoint(x: tileSize * 0.16,  y: -tileSize * 0.06),
+                           CGPoint(x: tileSize * 0.02,  y: tileSize * 0.22),
+                           CGPoint(x: -tileSize * 0.22, y: -tileSize * 0.18)] {
+                let chunk = SKShapeNode(circleOfRadius: tileSize * 0.07)
+                chunk.fillColor = UIColor(hex: "#6B2A0C").withAlphaComponent(0.95)
+                chunk.strokeColor = UIColor(hex: "#A75B22").withAlphaComponent(0.7)
+                chunk.lineWidth = 1
+                chunk.position = offset
+                chunk.zPosition = 5
+                container.addChild(chunk)
+            }
+
+            // Subtle "creeping" pulse so the spreader feels alive.
+            cocoa.run(.repeatForever(.sequence([
+                .fadeAlpha(to: 0.78, duration: 1.4),
+                .fadeAlpha(to: 0.95, duration: 1.4)
+            ])))
+            _ = blocker
+        }
+
+        if let blocker = cell.blocker, blocker.type == .syrup {
+            let goo = SKShapeNode(rectOf: CGSize(width: tileSize - 3, height: tileSize - 3),
+                                  cornerRadius: tileSize * 0.20)
+            goo.fillColor = UIColor(hex: "#EC4899").withAlphaComponent(0.48)
+            goo.strokeColor = UIColor(hex: "#FBCFE8").withAlphaComponent(0.92)
+            goo.lineWidth = 2
+            goo.glowWidth = 3
+            goo.zPosition = 4
+            container.addChild(goo)
+
+            // Drip droplets on the bottom edge to sell the "sticky" feeling.
+            for offset in [CGPoint(x: -tileSize * 0.20, y: -tileSize * 0.30),
+                           CGPoint(x:  tileSize * 0.08, y: -tileSize * 0.36),
+                           CGPoint(x:  tileSize * 0.26, y: -tileSize * 0.28)] {
+                let drop = SKShapeNode(circleOfRadius: tileSize * 0.06)
+                drop.fillColor = UIColor(hex: "#F472B6").withAlphaComponent(0.85)
+                drop.strokeColor = UIColor.white.withAlphaComponent(0.55)
+                drop.lineWidth = 1
+                drop.position = offset
+                drop.zPosition = 5
+                container.addChild(drop)
+                drop.run(.repeatForever(.sequence([
+                    .moveBy(x: 0, y: -1.5, duration: 0.8),
+                    .moveBy(x: 0, y: 1.5,  duration: 0.8)
+                ])))
+            }
+            _ = blocker
+        }
+
+        if let blocker = cell.blocker, blocker.type == .colorLock {
+            let lockRing = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
+                                       cornerRadius: tileSize * 0.22)
+            lockRing.fillColor = UIColor(hex: "#F8FAFC").withAlphaComponent(0.14)
+            lockRing.strokeColor = UIColor(hex: blocker.requiredColor ?? cell.color).withAlphaComponent(0.95)
+            lockRing.lineWidth = 3
+            lockRing.glowWidth = 3
+            lockRing.zPosition = 4
+            container.addChild(lockRing)
+
+            let colorKey = blocker.requiredColor ?? cell.color
+            let required = SKSpriteNode(texture: Theme.emojiTexture(forColor: colorKey))
+            required.size = CGSize(width: tileSize * 0.30, height: tileSize * 0.30)
+            required.position = CGPoint(x: tileSize * 0.24, y: tileSize * 0.24)
+            required.zPosition = 5
+            container.addChild(required)
+
+            let badge = SKShapeNode(circleOfRadius: tileSize * 0.15)
+            badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.72)
+            badge.strokeColor = .white.withAlphaComponent(0.85)
+            badge.lineWidth = 1
+            badge.position = CGPoint(x: -tileSize * 0.25, y: -tileSize * 0.25)
+            badge.zPosition = 5
+            container.addChild(badge)
+
+            let miniLock = Icons.sprite("lock.open",
+                                        size: tileSize * 0.16,
+                                        weight: .heavy,
+                                        tint: .white)
+            miniLock.position = badge.position
+            miniLock.zPosition = 6
+            container.addChild(miniLock)
+        }
+
+        if let blocker = cell.blocker, blocker.type == .chest {
+            let chest = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
+                                    cornerRadius: tileSize * 0.18)
+            chest.fillColor = UIColor(hex: "#92400E").withAlphaComponent(0.76)
+            chest.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.95)
+            chest.lineWidth = 2
+            chest.glowWidth = 2
+            chest.zPosition = 4
+            container.addChild(chest)
+
+            let lid = SKShapeNode(rectOf: CGSize(width: tileSize * 0.70, height: tileSize * 0.18),
+                                  cornerRadius: tileSize * 0.07)
+            lid.fillColor = UIColor(hex: "#F59E0B").withAlphaComponent(0.96)
+            lid.strokeColor = .clear
+            lid.position = CGPoint(x: 0, y: tileSize * 0.12)
+            lid.zPosition = 5
+            container.addChild(lid)
+
+            let lock = Icons.sprite("lock.fill",
+                                    size: tileSize * 0.20,
+                                    weight: .heavy,
+                                    tint: UIColor(hex: "#FEF3C7"))
+            lock.zPosition = 6
+            container.addChild(lock)
+        }
+
+        if let blocker = cell.blocker, blocker.type == .vine {
+            let ring = SKShapeNode(rectOf: CGSize(width: tileSize - 5, height: tileSize - 5),
+                                   cornerRadius: tileSize * 0.20)
+            ring.fillColor = UIColor(hex: "#064E3B").withAlphaComponent(0.22)
+            ring.strokeColor = UIColor(hex: "#22C55E").withAlphaComponent(0.92)
+            ring.lineWidth = 2
+            ring.glowWidth = 2
+            ring.zPosition = 4
+            container.addChild(ring)
+
+            for angle in [CGFloat.pi / 5, -CGFloat.pi / 5] {
+                let rope = SKShapeNode(rectOf: CGSize(width: tileSize * 0.82, height: tileSize * 0.08),
+                                       cornerRadius: tileSize * 0.04)
+                rope.fillColor = UIColor(hex: "#16A34A").withAlphaComponent(0.90)
+                rope.strokeColor = UIColor(hex: "#BBF7D0").withAlphaComponent(0.70)
+                rope.lineWidth = 1
+                rope.zRotation = angle
+                rope.zPosition = 5
+                container.addChild(rope)
+            }
+        }
+
+        if let blocker = cell.blocker, blocker.hits > 1, blocker.type != .crate {
+            addHitBadge(to: container, hits: blocker.hits)
         }
 
         // Bomb overlay — pulsing red glow + drawn bomb (black sphere + fuse spark)
@@ -911,1124 +2074,343 @@ final class GameScene: SKScene {
             ])))
         }
 
+        if cell.special == .stripedRow || cell.special == .stripedCol {
+            let stripeLayer = SKNode()
+            stripeLayer.zPosition = 2
+            container.addChild(stripeLayer)
+
+            let stripeCount = 3
+            for i in 0..<stripeCount {
+                let offset = CGFloat(i - 1) * tileSize * 0.22
+                let stripe: SKShapeNode
+                if cell.special == .stripedRow {
+                    stripe = SKShapeNode(rectOf: CGSize(width: tileSize * 0.78, height: tileSize * 0.09),
+                                         cornerRadius: tileSize * 0.04)
+                    stripe.position = CGPoint(x: 0, y: offset)
+                } else {
+                    stripe = SKShapeNode(rectOf: CGSize(width: tileSize * 0.09, height: tileSize * 0.78),
+                                         cornerRadius: tileSize * 0.04)
+                    stripe.position = CGPoint(x: offset, y: 0)
+                }
+                stripe.fillColor = UIColor.white.withAlphaComponent(0.72)
+                stripe.strokeColor = UIColor(hex: cell.color).withAlphaComponent(0.8)
+                stripe.lineWidth = 1
+                stripeLayer.addChild(stripe)
+            }
+
+            let glow = SKShapeNode(rectOf: CGSize(width: tileSize * 0.9, height: tileSize * 0.9),
+                                   cornerRadius: tileSize * 0.22)
+            glow.fillColor = UIColor.clear
+            glow.strokeColor = UIColor.white.withAlphaComponent(0.55)
+            glow.lineWidth = 2
+            glow.glowWidth = 4
+            glow.zPosition = 1
+            container.addChild(glow)
+        }
+
+        if cell.special == .wrapped {
+            let wrap = SKNode()
+            wrap.zPosition = 2
+            container.addChild(wrap)
+
+            let bandColor = UIColor(hex: "#FDE68A")
+            for angle in [CGFloat.pi / 4, -CGFloat.pi / 4] {
+                let band = SKShapeNode(rectOf: CGSize(width: tileSize * 0.92, height: tileSize * 0.12),
+                                       cornerRadius: tileSize * 0.05)
+                band.fillColor = bandColor.withAlphaComponent(0.9)
+                band.strokeColor = UIColor(hex: "#F59E0B")
+                band.lineWidth = 1
+                band.zRotation = angle
+                wrap.addChild(band)
+            }
+
+            let knot = SKShapeNode(circleOfRadius: tileSize * 0.13)
+            knot.fillColor = UIColor(hex: "#F97316")
+            knot.strokeColor = .white
+            knot.lineWidth = 1.5
+            knot.glowWidth = 3
+            wrap.addChild(knot)
+        }
+
+        if cell.special == .colorBomb {
+            let orb = SKShapeNode(circleOfRadius: tileSize * 0.34)
+            orb.fillColor = UIColor(hex: "#111827")
+            orb.strokeColor = UIColor.white.withAlphaComponent(0.45)
+            orb.lineWidth = 1.5
+            orb.glowWidth = 5
+            orb.zPosition = 2
+            container.addChild(orb)
+
+            let sprinkleColors = ["#F472B6", "#60A5FA", "#FACC15", "#34D399", "#FB923C", "#FFFFFF"]
+            for i in 0..<10 {
+                let angle = CGFloat(i) * (.pi * 2 / 10)
+                let radius = tileSize * (i.isMultiple(of: 2) ? 0.17 : 0.25)
+                let dot = SKShapeNode(circleOfRadius: tileSize * 0.035)
+                dot.fillColor = UIColor(hex: sprinkleColors[i % sprinkleColors.count])
+                dot.strokeColor = .clear
+                dot.position = CGPoint(x: cos(angle) * radius, y: sin(angle) * radius)
+                dot.zPosition = 3
+                container.addChild(dot)
+            }
+        }
+
+        if let blocker = cell.blocker, blocker.type == .countdown {
+            let scrim = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
+                                    cornerRadius: tileSize * 0.22)
+            scrim.fillColor = UIColor(hex: "#7F1D1D").withAlphaComponent(0.16)
+            scrim.strokeColor = UIColor(hex: "#EF4444").withAlphaComponent(0.95)
+            scrim.lineWidth = 2
+            scrim.glowWidth = 1.5
+            scrim.zPosition = 4
+            container.addChild(scrim)
+
+            let badge = SKShapeNode(circleOfRadius: tileSize * 0.22)
+            badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.82)
+            badge.strokeColor = UIColor(hex: "#EF4444")
+            badge.lineWidth = 1.5
+            badge.zPosition = 5
+            container.addChild(badge)
+
+            let num = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+            num.text = "\(blocker.countdown ?? 0)"
+            num.fontSize = max(11, tileSize * 0.30)
+            num.fontColor = .white
+            num.verticalAlignmentMode = .center
+            num.horizontalAlignmentMode = .center
+            num.zPosition = 6
+            container.addChild(num)
+        }
+
+        container.isAccessibilityElement = true
+        container.accessibilityLabel = tileAccessibilityLabel(for: cell)
+        container.accessibilityTraits = .button
+
         container.userData = NSMutableDictionary(dictionary: ["color": cell.color])
         return container
     }
 
-    // MARK: - Touch handling
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let t = touches.first else { return }
-        let p = t.location(in: self)
-
-        // 0. End-level card takes precedence
-        if let card = endLevelCard {
-            _ = card.handleTap(at: p)
-            return
-        }
-
-        // 0.25 Shop card
-        if let card = shopCard {
-            _ = card.handleTap(at: p)
-            return
-        }
-
-        // 0.3 Settings card
-        if let card = settingsCard {
-            _ = card.handleTap(at: p)
-            return
-        }
-
-        // 0.5 Modal card (legacy stubs) — tap outside dismisses
-        if let modal = modalCard {
-            let local = modal.convert(p, from: self)
-            var hit: SKNode? = modal.atPoint(local)
-            while let h = hit {
-                if h.name == "modalAction" {
-                    dismissModal()  // fires primary action
-                    return
-                }
-                if h.name == "modalClose" || h.name == "modalScrim" {
-                    modalPrimaryAction = nil
-                    dismissModal()
-                    return
-                }
-                hit = h.parent
+    /// VoiceOver description for a board tile: fruit, then any special and any
+    /// blocker, e.g. "grape, striped row, frozen". Lets a player using the
+    /// screen reader perceive the board state cell by cell.
+    func tileAccessibilityLabel(for cell: Cell) -> String {
+        var parts: [String] = [Theme.fruitName(forColor: cell.color)]
+        if let special = cell.special {
+            switch special {
+            case .stripedRow:  parts.append(String(localized: "striped row"))
+            case .stripedCol:  parts.append(String(localized: "striped column"))
+            case .wrapped:     parts.append(String(localized: "wrapped"))
+            case .colorBomb:   parts.append(String(localized: "color bomb"))
+            case .bomb:        parts.append(String(localized: "bomb"))
             }
-            return
         }
-
-        // 1. Quantity popup is open — handle option pick or dismiss
-        if let popup = quantityPopup {
-            let local = popup.convert(p, from: self)
-            for child in popup.children {
-                guard let name = child.name, name.hasPrefix("qty:"),
-                      child.contains(local) else { continue }
-                let qStr = String(name.dropFirst(4))
-                if let q = Int(qStr) { selectQuantity(q) }
-                hideQuantityPopup()
-                return
+        if cell.kind == .ingredient { parts.append(String(localized: "basket")) }
+        if cell.kind == .key { parts.append(String(localized: "key")) }
+        if let blocker = cell.blocker {
+            switch blocker.type {
+            case .ice:       parts.append(String(localized: "frozen"))
+            case .lock:      parts.append(String(localized: "locked"))
+            case .colorLock: parts.append(String(localized: "color locked"))
+            case .jelly:     parts.append(String(localized: "jelly"))
+            case .crate:     parts.append(String(localized: "crate"))
+            case .chest:     parts.append(String(localized: "chest"))
+            case .vine:      parts.append(String(localized: "vine"))
+            case .chocolate: parts.append(String(localized: "chocolate"))
+            case .syrup:     parts.append(String(localized: "syrup"))
+            case .countdown: parts.append(String(localized: "fuse \(blocker.countdown ?? 0)"))
             }
-            // tap outside popup → dismiss
-            hideQuantityPopup()
-            return
         }
-
-        // 2. Walk the node tree for HUD targets (booster / settings / cart / badge)
-        var node: SKNode? = atPoint(p)
-        while let n = node {
-            if n.name == "movesQuantityBadge" {
-                showQuantityPopup()
-                Effects.haptic(.light)
-                return
-            }
-            if n.name == "settingsButton" {
-                openSettings()
-                return
-            }
-            if n.name == "cartButton" {
-                openShop()
-                return
-            }
-            if let name = n.name, name.hasPrefix("booster:") {
-                let label = String(name.dropFirst("booster:".count))
-                handleBoosterTap(label)
-                return
-            }
-            node = n.parent
-        }
-
-        // 3. Booster mode active — next tile tap consumes it
-        if boosterMode != .none, let pos = cellAt(p), grid[pos.r][pos.c] != nil {
-            executeBoosterOnTile(pos)
-            return
-        }
-
-        // 3. Tile interaction
-        guard !isResolving else { return }
-        guard let pos = cellAt(p), grid[pos.r][pos.c] != nil else { return }
-        dragStartPoint = p
-
-        if let first = firstSelection {
-            if first == pos {
-                deselect()
-                return
-            }
-            if isAdjacent(first, pos) {
-                attemptSwap(first, pos)
-                deselect()
-            } else {
-                deselect()
-                select(pos)
-            }
-        } else {
-            select(pos)
-            Effects.haptic(.light)
-        }
+        return parts.joined(separator: ", ")
     }
 
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard !isResolving, let t = touches.first, let start = dragStartPoint, let first = firstSelection else { return }
-        let p = t.location(in: self)
-        let dx = p.x - start.x
-        let dy = p.y - start.y
-        let threshold = tileSize * 0.4
-        guard hypot(dx, dy) > threshold else { return }
+    /// Small high-contrast geometric marker placed on each tile when the
+    /// color-blind patterns setting is on. Each color gets a different shape
+    /// (circle / triangle / square / diamond / star / cross) so players can
+    /// tell tiles apart even when the colors look similar.
+    func makeColorBlindMarker(for color: String) -> SKNode {
+        let node = SKNode()
+        let size: CGFloat = max(10, tileSize * 0.20)
+        let halfPad: CGFloat = size * 0.18
 
-        var target = first
-        if abs(dx) > abs(dy) {
-            target = Pos(r: first.r, c: first.c + (dx > 0 ? 1 : -1))
-        } else {
-            target = Pos(r: first.r + (dy < 0 ? 1 : -1), c: first.c)
-        }
-        if target.r >= 0, target.r < rows, target.c >= 0, target.c < cols, grid[target.r][target.c] != nil {
-            attemptSwap(first, target)
-        }
-        deselect()
-        dragStartPoint = nil
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        dragStartPoint = nil
-    }
-
-    private func isAdjacent(_ a: Pos, _ b: Pos) -> Bool {
-        (a.r == b.r && abs(a.c - b.c) == 1) || (a.c == b.c && abs(a.r - b.r) == 1)
-    }
-
-    private func select(_ p: Pos) {
-        firstSelection = p
-        firstSelectionNode = nodes[p.r][p.c]
-        if let body = firstSelectionNode?.childNode(withName: "body") as? SKShapeNode {
-            body.strokeColor = skin.tileHighlight
-            body.lineWidth = 3
-            body.run(SKAction.repeatForever(.sequence([
-                .scale(to: 1.06, duration: 0.18),
-                .scale(to: 1.0, duration: 0.18)
-            ])), withKey: "pulse")
-        }
-    }
-
-    private func deselect() {
-        if let node = firstSelectionNode, let body = node.childNode(withName: "body") as? SKShapeNode {
-            body.removeAction(forKey: "pulse")
-            body.setScale(1.0)
-            body.strokeColor = skin.tileBorder
-            body.lineWidth = 1
-        }
-        firstSelection = nil
-        firstSelectionNode = nil
-    }
-
-    // MARK: - Swap + cascade
-
-    private func attemptSwap(_ a: Pos, _ b: Pos) {
-        guard !isResolving, movesLeft > 0 else { return }
-        isResolving = true
-        cascadeDepth = 0
-
-        let result = Engine.swapIfValid(grid, a, b)
-        let nodeA = nodes[a.r][a.c]
-        let nodeB = nodes[b.r][b.c]
-        let posA = point(forRow: a.r, col: a.c)
-        let posB = point(forRow: b.r, col: b.c)
-        let dur: TimeInterval = 0.15
-
-        if result.didSwap {
-            grid = result.grid
-            nodes[a.r][a.c] = nodeB
-            nodes[b.r][b.c] = nodeA
-            movesLeft -= 1
-            Effects.haptic(.light)
-            Audio.shared.play(.swapClick)
-            nodeA?.run(.move(to: posB, duration: dur))
-            nodeB?.run(.move(to: posA, duration: dur)) { [weak self] in
-                self?.resolveCascade()
-            }
-        } else {
-            Effects.haptic(.soft)
-            Audio.shared.play(.swapInvalid)
-            nodeA?.run(.sequence([.move(to: posB, duration: dur), .move(to: posA, duration: dur)]))
-            nodeB?.run(.sequence([.move(to: posA, duration: dur), .move(to: posB, duration: dur)])) { [weak self] in
-                self?.isResolving = false
-            }
-        }
-    }
-
-    private func resolveCascade() {
-        let groups = Engine.findMatchGroups(grid)
-        guard !groups.isEmpty else {
-            isResolving = false
-            checkLevelEnd()
-            return
-        }
-
-        cascadeDepth += 1
-        let depth = cascadeDepth
-
-        // Build the full cleared set (groups + special detonations)
-        var matches = Set<Pos>()
-        for g in groups { matches.formUnion(g) }
-        matches = Engine.expandMatchesWithSpecials(grid, matches)
-
-        // Detect a 5+ run → bomb candidate (spawned at the run's centre after clear)
-        var bombSpawnPos: Pos? = nil
-        if let runLen = levelConfig.bombSpawnRunLength {
-            for g in groups where g.count >= runLen {
-                bombSpawnPos = g[g.count / 2]
-                break
-            }
-        }
-
-        let cleared = matches.count
-        let multiplier = depth
-        let pointsPerTile = 10
-
-        // Compute centroid of cleared positions in scene coords
-        var sx: CGFloat = 0
-        var sy: CGFloat = 0
-        for p in matches {
-            let pt = point(forRow: p.r, col: p.c)
-            sx += pt.x
-            sy += pt.y
-        }
-        let centroid = CGPoint(x: sx / CGFloat(cleared), y: sy / CGFloat(cleared))
-
-        // Animate clear + spawn per-tile bursts
-        let clearGroup = SKAction.group([
-            .scale(to: 1.25, duration: 0.08),
-            .fadeOut(withDuration: 0.16)
-        ])
-
-        var nodesToRemove: [SKNode] = []
-        for p in matches {
-            if let n = nodes[p.r][p.c] {
-                nodesToRemove.append(n)
-                nodes[p.r][p.c] = nil
-
-                // Tile-color particle burst at this tile
-                let tint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
-                let burst = Effects.makeTileBurst(tint: tint)
-                burst.position = n.position
-                worldNode.addChild(burst)
-                burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
-            }
-        }
-
-        // Score popup at centroid
-        let added = cleared * pointsPerTile * multiplier
-        score += added
-        let popupColor: UIColor = depth >= 2 ? UIColor(hex: "#FACC15") : .white
-        Effects.showScorePopup(added, at: centroid, in: self, color: popupColor)
-
-        // Banner: combo (depth 2+) takes priority, else big-clear (4+ tiles)
-        if let combo = Effects.comboPhrase(forDepth: depth) {
-            Effects.showComboBanner(text: combo.text, color: combo.color, in: self)
-            Effects.notify(.success)
-            Audio.shared.play(.combo(depth: depth))
-        } else if let big = Effects.bigClearPhrase(forCount: cleared) {
-            Effects.showComboBanner(text: big.text, color: big.color, in: self)
-            Effects.haptic(.medium)
-            Audio.shared.play(.match)
-        } else {
-            Effects.haptic(.medium)
-            Audio.shared.play(.match)
-        }
-
-        // Confetti for big chains or massive single clears
-        if depth >= 3 || cleared >= 6 {
-            spawnConfetti()
-        }
-
-        // Screen shake for sizable clears
-        if cleared >= 4 || depth >= 2 {
-            Effects.shake(worldNode,
-                          intensity: cleared >= 6 ? 12 : 7,
-                          duration: 0.28)
-        }
-
-        Engine.clearMatches(&grid, matches: matches)
-
-        // Spawn a bomb tile at the centre of any 5+ run
-        if let bp = bombSpawnPos {
-            // Re-pick a color from the run's neighbours (any will do; use palette[0] as fallback)
-            let color = palette.randomElement() ?? palette[0]
-            grid[bp.r][bp.c] = Cell(id: "bomb-\(Int.random(in: 0..<99999))",
-                                     color: color, special: .bomb, kind: .normal)
-        }
-
-        let removeAction = SKAction.sequence([clearGroup, .removeFromParent()])
-        for n in nodesToRemove { n.run(removeAction) }
-
-        run(.wait(forDuration: 0.18)) { [weak self] in
-            self?.applyCollapseAndRefill()
-        }
-    }
-
-    // MARK: - Level end
-
-    private func checkLevelEnd() {
-        guard !levelEnded else { return }
-        if score >= scoreTarget {
-            endLevel(won: true)
-        } else if movesLeft <= 0 {
-            endLevel(won: false)
-        }
-    }
-
-    private func endLevel(won: Bool) {
-        levelEnded = true
-        isResolving = true
-
-        let stars: Int = {
-            guard won else { return 0 }
-            let t = levelConfig.starThresholds
-            if score >= t.three { return 3 }
-            if score >= t.two { return 2 }
-            return 1
-        }()
-
-        // Banked total score grows when you win — survives relaunches.
-        if won {
-            totalScore += score
-        }
-
-        let outcome: EndLevelCard.Outcome = won
-            ? .win(stars: stars, score: score, target: scoreTarget)
-            : .lose(score: score, target: scoreTarget)
-
-        let card = EndLevelCard(outcome: outcome, sceneSize: size)
-        card.position = .zero
-        card.alpha = 0
-        card.setScale(0.7)
-        addChild(card)
-        card.run(.group([
-            .fadeIn(withDuration: 0.2),
-            .scale(to: 1.0, duration: 0.2)
-        ]))
-        endLevelCard = card
-
-        card.onPrimary = { [weak self] in
-            guard let self = self else { return }
-            if won, self.levelNumber < Levels.count {
-                self.advanceToLevel(self.levelNumber + 1)
-            } else {
-                self.resetLevel()
-            }
-        }
-        card.onSecondary = { [weak self] in
-            self?.resetLevel()
-        }
-
-        if won {
-            Effects.notify(.success)
-            Audio.shared.play(.win)
-        } else {
-            Effects.notify(.error)
-            Audio.shared.play(.lose)
-        }
-    }
-
-    private func advanceToLevel(_ n: Int) {
-        endLevelCard?.dismiss()
-        endLevelCard = nil
-        levelEnded = false
-        isResolving = false
-        cascadeDepth = 0
-        deselect()
-        levelConfig = Levels.config(for: n)
-        Persistence.currentLevel = n
-        rebuildHUD()
-        layoutBoard()
-        startNewGame()
-    }
-
-    private func resetLevel() {
-        endLevelCard?.dismiss()
-        endLevelCard = nil
-        levelEnded = false
-        isResolving = false
-        cascadeDepth = 0
-        deselect()
-        rebuildHUD()
-        layoutBoard()
-        startNewGame()
-    }
-
-    // MARK: - +Moves quantity selector
-
-    private func showQuantityPopup() {
-        hideQuantityPopup()
-        guard let circle = movesBoosterCircle else { return }
-
-        // Convert the circle's position into scene coords (it lives inside footerCard)
-        let circleScenePos = circle.parent?.convert(circle.position, to: self) ?? circle.position
-
-        let popupW: CGFloat = 240
-        let popupH: CGFloat = 86
-        let popupY = circleScenePos.y + 78
-
-        let popup = SKNode()
-        popup.position = CGPoint(x: circleScenePos.x, y: popupY)
-        popup.zPosition = 1000
-        popup.alpha = 0
-        popup.setScale(0.4)
-
-        // Card background
-        let bg = SKShapeNode(rectOf: CGSize(width: popupW, height: popupH), cornerRadius: 16)
-        bg.fillColor = UIColor(white: 1, alpha: 0.97)
-        bg.strokeColor = UIColor(white: 0, alpha: 0.08)
+        let bg = SKShapeNode(circleOfRadius: size * 0.78)
+        bg.fillColor = UIColor(white: 0, alpha: 0.55)
+        bg.strokeColor = UIColor.white.withAlphaComponent(0.78)
         bg.lineWidth = 1
-        bg.zPosition = 0
-        popup.addChild(bg)
+        node.addChild(bg)
 
-        // Drop shadow
-        let shadow = SKShapeNode(rectOf: CGSize(width: popupW, height: popupH), cornerRadius: 16)
-        shadow.fillColor = UIColor(white: 0, alpha: 0.18)
-        shadow.strokeColor = .clear
-        shadow.position = CGPoint(x: 0, y: -3)
-        shadow.zPosition = -1
-        popup.addChild(shadow)
-
-        // Title
-        let title = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
-        title.text = "Buy moves"
-        title.fontSize = 11
-        title.fontColor = UIColor(hex: "#475569")
-        title.verticalAlignmentMode = .center
-        title.horizontalAlignmentMode = .center
-        title.position = CGPoint(x: 0, y: popupH / 2 - 16)
-        popup.addChild(title)
-
-        // Options as small dotted pills
-        let pillW: CGFloat = 36
-        let pillH: CGFloat = 30
-        let spacing: CGFloat = 8
-        let totalW = CGFloat(quantityOptions.count) * pillW + CGFloat(quantityOptions.count - 1) * spacing
-        var x = -totalW / 2 + pillW / 2
-
-        for opt in quantityOptions {
-            let isSelected = opt == movesQuantity
-            let pill = SKShapeNode(rectOf: CGSize(width: pillW, height: pillH), cornerRadius: 9)
-            pill.fillColor = isSelected ? UIColor(hex: "#F472B6") : UIColor(white: 0, alpha: 0.05)
-            pill.strokeColor = isSelected ? .clear : UIColor(white: 0, alpha: 0.12)
-            pill.lineWidth = 1
-            pill.position = CGPoint(x: x, y: -10)
-            pill.name = "qty:\(opt)"
-            popup.addChild(pill)
-
-            let l = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-            l.text = "\(opt)"
-            l.fontSize = 14
-            l.fontColor = isSelected ? .white : UIColor(hex: "#0F172A")
-            l.verticalAlignmentMode = .center
-            l.horizontalAlignmentMode = .center
-            pill.addChild(l)
-
-            x += pillW + spacing
-        }
-
-        // Pointer (small triangle pointing down at the badge) — drawn as a rotated square
-        let pointer = SKShapeNode(rectOf: CGSize(width: 14, height: 14), cornerRadius: 2)
-        pointer.fillColor = UIColor(white: 1, alpha: 0.97)
-        pointer.strokeColor = .clear
-        pointer.position = CGPoint(x: 0, y: -popupH / 2 + 4)
-        pointer.zRotation = .pi / 4
-        pointer.zPosition = -1
-        popup.addChild(pointer)
-
-        addChild(popup)
-        quantityPopup = popup
-
-        popup.run(.group([
-            .scale(to: 1.0, duration: 0.18),
-            .fadeIn(withDuration: 0.12)
-        ]))
+        let shape = SKShapeNode(path: colorBlindMarkerPath(for: color, size: size))
+        shape.fillColor = .white
+        shape.strokeColor = .clear
+        node.addChild(shape)
+        _ = halfPad
+        return node
     }
 
-    private func hideQuantityPopup() {
-        guard let popup = quantityPopup else { return }
-        quantityPopup = nil
-        popup.run(.sequence([
-            .group([
-                .scale(to: 0.4, duration: 0.12),
-                .fadeOut(withDuration: 0.12)
-            ]),
-            .removeFromParent()
-        ]))
-    }
-
-    private func selectQuantity(_ q: Int) {
-        movesQuantity = q
-        movesQuantityBadgeLabel?.text = "+\(q)"
-        // little pop on the badge to confirm the change
-        movesQuantityBadge?.run(.sequence([
-            .scale(to: 1.25, duration: 0.1),
-            .scale(to: 1.0, duration: 0.12)
-        ]))
-        Effects.haptic(.light)
-    }
-
-    private func buyMoves() {
-        guard cash >= movesBuyCost else {
-            Effects.haptic(.soft)
-            // Briefly shake the cash pill to signal "not enough"
-            if let pill = footerCard?.children.first(where: { ($0 as? SKShapeNode)?.fillColor == UIColor(white: 1, alpha: 0.97) }) {
-                Effects.shake(pill, intensity: 4, duration: 0.2)
+    func colorBlindMarkerPath(for color: String, size: CGFloat) -> CGPath {
+        let idx = Theme.fruitIndex(forColor: color) % 6
+        let half = size / 2
+        let path = UIBezierPath()
+        switch idx {
+        case 0: // circle
+            path.append(UIBezierPath(ovalIn: CGRect(x: -half * 0.7, y: -half * 0.7,
+                                                     width: size * 0.7, height: size * 0.7)))
+        case 1: // upward triangle
+            path.move(to: CGPoint(x: 0, y: half * 0.78))
+            path.addLine(to: CGPoint(x: half * 0.74, y: -half * 0.62))
+            path.addLine(to: CGPoint(x: -half * 0.74, y: -half * 0.62))
+            path.close()
+        case 2: // square
+            path.append(UIBezierPath(rect: CGRect(x: -half * 0.6, y: -half * 0.6,
+                                                   width: size * 0.6, height: size * 0.6)))
+        case 3: // diamond
+            path.move(to: CGPoint(x: 0, y: half * 0.78))
+            path.addLine(to: CGPoint(x: half * 0.78, y: 0))
+            path.addLine(to: CGPoint(x: 0, y: -half * 0.78))
+            path.addLine(to: CGPoint(x: -half * 0.78, y: 0))
+            path.close()
+        case 4: // 5-pointed star
+            let outer = half * 0.82
+            let inner = outer * 0.42
+            for i in 0..<10 {
+                let r = i % 2 == 0 ? outer : inner
+                let theta = -CGFloat.pi / 2 + CGFloat(i) * (.pi / 5)
+                let pt = CGPoint(x: r * cos(theta), y: r * sin(theta))
+                if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
             }
-            return
+            path.close()
+        default: // cross / plus
+            let arm = half * 0.78
+            let thick = half * 0.30
+            path.append(UIBezierPath(rect: CGRect(x: -thick, y: -arm,
+                                                   width: thick * 2, height: arm * 2)))
+            path.append(UIBezierPath(rect: CGRect(x: -arm, y: -thick,
+                                                   width: arm * 2, height: thick * 2)))
         }
-        cash -= movesBuyCost
-        movesLeft += movesQuantity
-        Effects.haptic(.medium)
-        Effects.notify(.success)
-
-        // Floating "+N moves" feedback above the booster
-        if let circle = movesBoosterCircle {
-            let pos = circle.parent?.convert(circle.position, to: self) ?? .zero
-            Effects.showScorePopup(movesQuantity,
-                                   at: CGPoint(x: pos.x, y: pos.y + 36),
-                                   in: self,
-                                   color: UIColor(hex: "#F472B6"))
-        }
-
-        // Bounce the booster circle
-        movesBoosterCircle?.run(.sequence([
-            .scale(to: 1.18, duration: 0.1),
-            .scale(to: 1.0, duration: 0.14)
-        ]))
+        return path.cgPath
     }
 
-    // MARK: - Booster handlers
+    func addHitBadge(to container: SKNode, hits: Int) {
+        let radius = max(8, tileSize * 0.15)
+        let badge = SKShapeNode(circleOfRadius: radius)
+        badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.82)
+        badge.strokeColor = .white.withAlphaComponent(0.90)
+        badge.lineWidth = 1
+        badge.position = CGPoint(x: tileSize * 0.27, y: tileSize * 0.27)
+        badge.zPosition = 8
+        container.addChild(badge)
 
-    private func handleBoosterTap(_ label: String) {
-        // If already in a mode and the same booster is tapped again, cancel.
-        if (label == "Hammer" && boosterMode == .hammer) ||
-           (label == "Swap"   && boosterMode == .swap) {
-            cancelBoosterMode()
-            return
-        }
-        cancelBoosterMode()
-
-        switch label {
-        case "Hammer":  tryUseHammer()
-        case "Swap":    tryUseSwap()
-        case "Shuffle": tryUseShuffle()
-        case "+Moves":  buyMoves()
-        case "Life":    tryUseLife()
-        default: break
-        }
-    }
-
-    private func tryUseHammer() {
-        // Use a stocked hammer for free if you own one; otherwise pay cash.
-        if hammerCount == 0, cash < hammerCost { insufficientCashFeedback(); return }
-        boosterMode = .hammer
-        showBoosterHint(hammerCount > 0 ? "Tap a fruit to smash! (\(hammerCount) left)"
-                                         : "Tap a fruit to smash!")
-        highlightActiveBooster("Hammer")
-        Effects.haptic(.light)
-    }
-
-    private func tryUseSwap() {
-        if swapCount == 0, cash < swapCost { insufficientCashFeedback(); return }
-        boosterMode = .swap
-        swapFirstPick = nil
-        swapFirstNode = nil
-        showBoosterHint(swapCount > 0 ? "Pick two fruits (\(swapCount) left)"
-                                       : "Pick two fruits to swap")
-        highlightActiveBooster("Swap")
-        Effects.haptic(.light)
-    }
-
-    private func tryUseShuffle() {
-        guard shuffleCount > 0 else {
-            insufficientCashFeedback()
-            return
-        }
-        shuffleCount -= 1
-        rebuildShuffleChip()
-        performShuffle()
-        Effects.haptic(.medium)
-        Effects.notify(.success)
-    }
-
-    private func tryUseLife() {
-        guard cash >= lifeCost else { insufficientCashFeedback(); return }
-        cash -= lifeCost
-        lives = min(livesMax, lives + 1)
-        Effects.haptic(.medium)
-        Effects.notify(.success)
-        if let circle = boosterCircles["Life"] {
-            let pos = circle.parent?.convert(circle.position, to: self) ?? .zero
-            Effects.showScorePopup(1,
-                                   at: CGPoint(x: pos.x, y: pos.y + 36),
-                                   in: self,
-                                   color: UIColor(hex: "#EF4444"))
-            circle.run(.sequence([.scale(to: 1.18, duration: 0.1), .scale(to: 1.0, duration: 0.14)]))
-        }
-        updateHUD()
-    }
-
-    // MARK: - Booster mode visuals
-
-    private func showBoosterHint(_ text: String) {
-        boosterHintLabel?.removeFromParent()
-        let label = SKLabelNode(fontNamed: "AvenirNext-Bold")
-        label.text = text
-        label.fontSize = 16
+        let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        label.text = "\(hits)"
+        label.fontSize = max(9, tileSize * 0.18)
         label.fontColor = .white
         label.verticalAlignmentMode = .center
         label.horizontalAlignmentMode = .center
-        label.zPosition = 600
-        label.alpha = 0
-        label.position = CGPoint(x: 0, y: 0)
-
-        let bg = SKShapeNode(rectOf: CGSize(width: 240, height: 36), cornerRadius: 18)
-        bg.fillColor = UIColor(white: 0, alpha: 0.7)
-        bg.strokeColor = UIColor.white.withAlphaComponent(0.5)
-        bg.lineWidth = 1
-        bg.zPosition = 599
-        bg.alpha = 0
-        bg.position = CGPoint(x: 0, y: 0)
-
-        addChild(bg)
-        addChild(label)
-        bg.run(.fadeIn(withDuration: 0.18))
-        label.run(.fadeIn(withDuration: 0.18))
-        boosterHintLabel = label
-        bg.name = "boosterHintBg"
+        badge.addChild(label)
     }
 
-    private func hideBoosterHint() {
-        boosterHintLabel?.run(.sequence([.fadeOut(withDuration: 0.15), .removeFromParent()]))
-        boosterHintLabel = nil
-        childNode(withName: "boosterHintBg")?.run(.sequence([.fadeOut(withDuration: 0.15), .removeFromParent()]))
-    }
-
-    private func highlightActiveBooster(_ label: String) {
-        for (k, c) in boosterCircles {
-            c.removeAction(forKey: "boosterPulse")
-            c.setScale(1.0)
-            if k == label {
-                c.run(.repeatForever(.sequence([
-                    .scale(to: 1.15, duration: 0.4),
-                    .scale(to: 1.0, duration: 0.4)
-                ])), withKey: "boosterPulse")
+    func addCrackLines(to container: SKNode, tint: UIColor, alpha: CGFloat) {
+        let paths: [[CGPoint]] = [
+            [CGPoint(x: -0.18, y: 0.20), CGPoint(x: -0.05, y: 0.04), CGPoint(x: -0.12, y: -0.12)],
+            [CGPoint(x: 0.05, y: 0.24), CGPoint(x: 0.12, y: 0.04), CGPoint(x: 0.24, y: -0.08)],
+            [CGPoint(x: -0.24, y: -0.02), CGPoint(x: -0.06, y: -0.05), CGPoint(x: 0.08, y: -0.22)]
+        ]
+        for points in paths {
+            let path = CGMutablePath()
+            guard let first = points.first else { continue }
+            path.move(to: CGPoint(x: first.x * tileSize, y: first.y * tileSize))
+            for point in points.dropFirst() {
+                path.addLine(to: CGPoint(x: point.x * tileSize, y: point.y * tileSize))
             }
+            let line = SKShapeNode(path: path)
+            line.strokeColor = tint.withAlphaComponent(alpha)
+            line.lineWidth = max(1.2, tileSize * 0.035)
+            line.lineCap = .round
+            line.zPosition = 7
+            container.addChild(line)
         }
     }
 
-    private func cancelBoosterMode() {
-        boosterMode = .none
-        swapFirstPick = nil
-        if let n = swapFirstNode, let body = n.childNode(withName: "body") as? SKShapeNode {
-            body.removeAction(forKey: "swapPulse")
-            body.setScale(1.0)
-            body.strokeColor = skin.tileBorder
-            body.lineWidth = 1
+    func showMechanicImpact(_ type: BlockerType, at point: CGPoint) {
+        let text: String
+        let color: UIColor
+        switch type {
+        case .ice:
+            text = "CRACK"
+            color = UIColor(hex: "#7DD3FC")
+            Audio.shared.play(.match)
+        case .lock:
+            text = "OPEN"
+            color = UIColor(hex: "#FACC15")
+            Audio.shared.play(.tap)
+        case .jelly:
+            text = "SPLASH"
+            color = UIColor(hex: "#F9A8D4")
+            Audio.shared.play(.jelly)
+        case .crate:
+            text = "CRUNCH"
+            color = UIColor(hex: "#F59E0B")
+            Audio.shared.play(.crate)
+        case .colorLock:
+            text = "UNLOCK"
+            color = UIColor(hex: "#A78BFA")
+            Audio.shared.play(.tap)
+        case .chest:
+            text = "CHEST"
+            color = UIColor(hex: "#FACC15")
+            Audio.shared.play(.combo(depth: 2))
+        case .vine:
+            text = "CUT"
+            color = UIColor(hex: "#22C55E")
+            Audio.shared.play(.match)
+        case .chocolate:
+            text = "CRUMBLE"
+            color = UIColor(hex: "#A75B22")
+            Audio.shared.play(.crate)
+        case .syrup:
+            text = "SPLAT"
+            color = UIColor(hex: "#EC4899")
+            Audio.shared.play(.jelly)
+        case .countdown:
+            text = "DEFUSED"
+            color = UIColor(hex: "#EF4444")
+            Audio.shared.play(.match)
         }
-        swapFirstNode = nil
-        hideBoosterHint()
-        for c in boosterCircles.values {
-            c.removeAction(forKey: "boosterPulse")
-            c.setScale(1.0)
+
+        let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        label.text = text
+        label.fontSize = max(12, tileSize * 0.23)
+        label.fontColor = color
+        label.verticalAlignmentMode = .center
+        label.horizontalAlignmentMode = .center
+        label.position = point
+        label.zPosition = 850
+        worldNode.addChild(label)
+
+        let cracks = SKNode()
+        cracks.position = point
+        cracks.zPosition = 845
+        for angle in stride(from: CGFloat(0), to: CGFloat.pi * 2, by: CGFloat.pi / 3) {
+            let path = CGMutablePath()
+            path.move(to: .zero)
+            path.addLine(to: CGPoint(x: cos(angle) * tileSize * 0.30,
+                                     y: sin(angle) * tileSize * 0.30))
+            let shard = SKShapeNode(path: path)
+            shard.strokeColor = color.withAlphaComponent(0.95)
+            shard.lineWidth = max(1.4, tileSize * 0.04)
+            shard.glowWidth = 2
+            cracks.addChild(shard)
         }
-    }
-
-    // MARK: - Booster execution on tile
-
-    private func executeBoosterOnTile(_ pos: Pos) {
-        switch boosterMode {
-        case .hammer:
-            performHammer(at: pos)
-        case .swap:
-            performSwapPick(pos)
-        case .none:
-            break
-        }
-    }
-
-    private func performHammer(at pos: Pos) {
-        guard let node = nodes[pos.r][pos.c] else { return }
-        // Spend a stocked hammer first; fall back to cash.
-        if hammerCount > 0 { hammerCount -= 1 } else { cash -= hammerCost }
-        cancelBoosterMode()
-        Effects.haptic(.heavy)
-        Audio.shared.play(.bomb)
-
-        // Spawn explosion FX at the tile
-        let tint = UIColor(hex: (node.userData?["color"] as? String) ?? "#FFFFFF")
-        let burst = Effects.makeTileBurst(tint: tint)
-        burst.position = node.position
-        worldNode.addChild(burst)
-        burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
-
-        node.run(.sequence([
-            .group([.scale(to: 1.4, duration: 0.1), .fadeOut(withDuration: 0.18)]),
+        worldNode.addChild(cracks)
+        cracks.run(.sequence([
+            .group([.scale(to: 1.35, duration: 0.18),
+                    .fadeOut(withDuration: 0.24)]),
             .removeFromParent()
         ]))
-        nodes[pos.r][pos.c] = nil
-        grid[pos.r][pos.c] = nil
-
-        Effects.shake(worldNode, intensity: 6, duration: 0.18)
-
-        isResolving = true
-        run(.wait(forDuration: 0.2)) { [weak self] in
-            self?.applyCollapseAndRefill()
-        }
-    }
-
-    private func performSwapPick(_ pos: Pos) {
-        if let first = swapFirstPick {
-            // Force-swap regardless of validity. Stocked swap first; else cash.
-            if swapCount > 0 { swapCount -= 1 } else { cash -= swapCost }
-            let nodeA = nodes[first.r][first.c]
-            let nodeB = nodes[pos.r][pos.c]
-            let posA = point(forRow: first.r, col: first.c)
-            let posB = point(forRow: pos.r, col: pos.c)
-
-            // Swap in grid
-            let tmp = grid[first.r][first.c]
-            grid[first.r][first.c] = grid[pos.r][pos.c]
-            grid[pos.r][pos.c] = tmp
-            nodes[first.r][first.c] = nodeB
-            nodes[pos.r][pos.c] = nodeA
-
-            cancelBoosterMode()
-            isResolving = true
-            Effects.haptic(.medium)
-            nodeA?.run(.move(to: posB, duration: 0.2))
-            nodeB?.run(.move(to: posA, duration: 0.2)) { [weak self] in
-                self?.cascadeDepth = 0
-                self?.resolveCascade()
-            }
-        } else {
-            // First pick — highlight and wait for second
-            swapFirstPick = pos
-            swapFirstNode = nodes[pos.r][pos.c]
-            if let body = swapFirstNode?.childNode(withName: "body") as? SKShapeNode {
-                body.strokeColor = UIColor(hex: "#FACC15")
-                body.lineWidth = 4
-                body.run(.repeatForever(.sequence([
-                    .scale(to: 1.08, duration: 0.25),
-                    .scale(to: 1.0, duration: 0.25)
-                ])), withKey: "swapPulse")
-            }
-            Effects.haptic(.light)
-        }
-    }
-
-    private func performShuffle() {
-        var positions: [Pos] = []
-        var cells: [Cell] = []
-        for r in 0..<rows {
-            for c in 0..<cols {
-                if let cell = grid[r][c], cell.blocker == nil, cell.special == nil {
-                    positions.append(Pos(r: r, c: c))
-                    cells.append(cell)
-                }
-            }
-        }
-        cells.shuffle()
-        for (i, p) in positions.enumerated() {
-            let source = cells[i]
-            grid[p.r][p.c]?.color = source.color
-            grid[p.r][p.c]?.special = source.special
-            grid[p.r][p.c]?.kind = source.kind
-        }
-        rebuildAllNodes()
-    }
-
-    private func rebuildShuffleChip() {
-        // Rebuild the footer card so the shuffle chip count refreshes
-        rebuildHUD()
-        updateHUD()
-    }
-
-    private func insufficientCashFeedback() {
-        Effects.haptic(.soft)
-        Effects.notify(.warning)
-        // Brief shake of the cash pill
-        if let footer = footerCard {
-            for child in footer.children where child is SKShapeNode {
-                if let s = child as? SKShapeNode, s.frame.width > 100, s.frame.height < 50 {
-                    Effects.shake(s, intensity: 4, duration: 0.2)
-                    break
-                }
-            }
-        }
-    }
-
-    // MARK: - Settings + Shop modals
-
-    private func openSettings() {
-        settingsCard?.dismiss()
-        let card = SettingsCard(sceneSize: size)
-        card.position = .zero
-        addChild(card)
-        settingsCard = card
-
-        card.onAction = { [weak self] action in
-            guard let self = self else { return }
-            switch action {
-            case .close:
-                self.settingsCard?.dismiss()
-                self.settingsCard = nil
-            case .restartLevel:
-                self.settingsCard?.dismiss { [weak self] in
-                    self?.settingsCard = nil
-                    self?.resetLevel()
-                }
-            case .resetProgress:
-                self.settingsCard?.dismiss { [weak self] in
-                    self?.settingsCard = nil
-                    self?.performResetProgress()
-                }
-            }
-        }
-    }
-
-    /// Wipes saved progress (level, cash, lives, boosters) and restarts at level 1.
-    /// Preserves the user's settings toggles.
-    private func performResetProgress() {
-        Persistence.resetAll()
-        levelConfig = Levels.config(for: 1)
-        // Hydrate with defaults
-        lives         = Persistence.lives
-        totalScore    = Persistence.totalScore
-        cash          = Persistence.cash
-        shuffleCount  = Persistence.shuffleCount
-        hammerCount   = Persistence.hammerCount
-        swapCount     = Persistence.swapCount
-        movesQuantity = Persistence.movesQuantity
-        rebuildHUD()
-        layoutBoard()
-        startNewGame()
-        Effects.notify(.warning)
-    }
-
-    private func openShop() {
-        // Dismiss any existing card first
-        shopCard?.dismiss()
-        shopCard = nil
-
-        let pink   = UIColor(hex: "#F472B6")
-        let teal   = UIColor(hex: "#10B981")
-        let blue   = UIColor(hex: "#60A5FA")
-        let orange = UIColor(hex: "#F97316")
-        let yellow = UIColor(hex: "#FACC15")
-
-        let items: [ShopCard.Item] = [
-            .init(id: "ad100",
-                  emojiIcon: nil, symbolIcon: "play.fill",
-                  iconBg: teal, iconTint: .white,
-                  title: "Watch Ad",
-                  subtitle: "Free 100 coins",
-                  buttonText: "Watch",
-                  buttonColor: teal, buttonTextColor: .white,
-                  enabled: true),
-            .init(id: "lives3",
-                  emojiIcon: "❤️", symbolIcon: nil,
-                  iconBg: UIColor(hex: "#FBCFE8"), iconTint: .white,
-                  title: "+3 Lives",
-                  subtitle: "Refill on demand",
-                  buttonText: "💰 450",
-                  buttonColor: pink, buttonTextColor: .white,
-                  enabled: true),
-            .init(id: "shuffles5",
-                  emojiIcon: "🔀", symbolIcon: nil,
-                  iconBg: UIColor(hex: "#BAE6FD"), iconTint: .white,
-                  title: "+5 Shuffles",
-                  subtitle: "Reshuffle the board",
-                  buttonText: "💰 200",
-                  buttonColor: blue, buttonTextColor: .white,
-                  enabled: true),
-            .init(id: "hammers5",
-                  emojiIcon: "🔨", symbolIcon: nil,
-                  iconBg: UIColor(hex: "#FED7AA"), iconTint: .white,
-                  title: "+5 Hammers",
-                  subtitle: "Smash any tile",
-                  buttonText: "💰 400",
-                  buttonColor: orange, buttonTextColor: .white,
-                  enabled: true),
-            .init(id: "swaps5",
-                  emojiIcon: "✋", symbolIcon: nil,
-                  iconBg: UIColor(hex: "#FEF08A"), iconTint: .white,
-                  title: "+5 Swaps",
-                  subtitle: "Force-swap any two tiles",
-                  buttonText: "💰 600",
-                  buttonColor: yellow, buttonTextColor: UIColor(hex: "#0F172A"),
-                  enabled: true),
-            .init(id: "cashS",
-                  emojiIcon: "💰", symbolIcon: nil,
-                  iconBg: UIColor(hex: "#FEF3C7"), iconTint: .white,
-                  title: "Coin Pack — S",
-                  subtitle: "500 coins",
-                  buttonText: "$0.99",
-                  buttonColor: pink, buttonTextColor: .white,
-                  enabled: false),
-            .init(id: "cashL",
-                  emojiIcon: "💰", symbolIcon: nil,
-                  iconBg: UIColor(hex: "#FEF3C7"), iconTint: .white,
-                  title: "Coin Pack — L",
-                  subtitle: "5,000 coins",
-                  buttonText: "$9.99",
-                  buttonColor: pink, buttonTextColor: .white,
-                  enabled: false)
-        ]
-
-        let card = ShopCard(items: items, walletCash: cash, sceneSize: size)
-        card.position = .zero
-        card.alpha = 0
-        addChild(card)
-        card.run(.fadeIn(withDuration: 0.18))
-        shopCard = card
-
-        card.onBuy = { [weak self] id in self?.handleShopBuy(id) }
-        card.onClose = { [weak self] in
-            self?.shopCard?.dismiss()
-            self?.shopCard = nil
-        }
-    }
-
-    private func handleShopBuy(_ id: String) {
-        switch id {
-        case "ad100":
-            // Placeholder reward (no real ad SDK yet)
-            cash += 100
-            Effects.notify(.success)
-        case "lives3":
-            guard cash >= 450 else { insufficientCashFeedback(); return }
-            cash -= 450
-            lives = min(livesMax, lives + 3)
-            Effects.notify(.success)
-        case "shuffles5":
-            guard cash >= 200 else { insufficientCashFeedback(); return }
-            cash -= 200
-            shuffleCount += 5
-            Effects.notify(.success)
-        case "hammers5":
-            guard cash >= 400 else { insufficientCashFeedback(); return }
-            cash -= 400
-            hammerCount += 5
-            Effects.notify(.success)
-        case "swaps5":
-            guard cash >= 600 else { insufficientCashFeedback(); return }
-            cash -= 600
-            swapCount += 5
-            Effects.notify(.success)
-        default:
-            break
-        }
-        shopCard?.setWallet(cash)
-    }
-
-    private func showModal(title: String, message: String, primary: String, primaryAction: (() -> Void)?) {
-        dismissModal()
-
-        let scrim = SKShapeNode(rectOf: size)
-        scrim.fillColor = UIColor(white: 0, alpha: 0.55)
-        scrim.strokeColor = .clear
-        scrim.zPosition = 1500
-        scrim.alpha = 0
-        scrim.name = "modalScrim"
-
-        let cardW = min(size.width - 60, 320)
-        let cardH: CGFloat = 240
-        let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 22)
-        card.fillColor = UIColor(white: 1, alpha: 0.97)
-        card.strokeColor = UIColor.white.withAlphaComponent(0.6)
-        card.lineWidth = 1
-        card.zPosition = 1501
-        card.position = .zero
-        card.alpha = 0
-        card.setScale(0.7)
-
-        let titleL = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        titleL.text = title
-        titleL.fontSize = 24
-        titleL.fontColor = UIColor(hex: "#0F172A")
-        titleL.verticalAlignmentMode = .center
-        titleL.horizontalAlignmentMode = .center
-        titleL.position = CGPoint(x: 0, y: cardH / 2 - 36)
-        card.addChild(titleL)
-
-        // Multi-line message via two labels (simple)
-        let lines = message.components(separatedBy: "\n")
-        var y: CGFloat = cardH / 2 - 80
-        for line in lines {
-            let l = SKLabelNode(fontNamed: "AvenirNext-Medium")
-            l.text = line
-            l.fontSize = 13
-            l.fontColor = UIColor(hex: "#475569")
-            l.verticalAlignmentMode = .center
-            l.horizontalAlignmentMode = .center
-            l.position = CGPoint(x: 0, y: y)
-            card.addChild(l)
-            y -= 18
-        }
-
-        let btn = SKShapeNode(rectOf: CGSize(width: cardW - 56, height: 46), cornerRadius: 23)
-        btn.fillColor = UIColor(hex: "#F472B6")
-        btn.strokeColor = .clear
-        btn.position = CGPoint(x: 0, y: -cardH / 2 + 50)
-        btn.name = "modalAction"
-        let btnL = SKLabelNode(fontNamed: "AvenirNext-Bold")
-        btnL.text = primary
-        btnL.fontSize = 16
-        btnL.fontColor = .white
-        btnL.verticalAlignmentMode = .center
-        btnL.horizontalAlignmentMode = .center
-        btn.addChild(btnL)
-        card.addChild(btn)
-
-        let close = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
-        close.text = "Close"
-        close.fontSize = 13
-        close.fontColor = UIColor(hex: "#475569")
-        close.verticalAlignmentMode = .center
-        close.horizontalAlignmentMode = .center
-        close.position = CGPoint(x: 0, y: -cardH / 2 + 18)
-        close.name = "modalClose"
-        card.addChild(close)
-
-        let container = SKNode()
-        container.zPosition = 1500
-        container.addChild(scrim)
-        container.addChild(card)
-        addChild(container)
-        modalCard = container
-        modalPrimaryAction = primaryAction
-
-        scrim.run(.fadeAlpha(to: 1.0, duration: 0.18))
-        card.run(.group([
-            .fadeIn(withDuration: 0.18),
-            .scale(to: 1.0, duration: 0.22)
+        label.run(.sequence([
+            .group([.scale(to: 1.25, duration: 0.12),
+                    .moveBy(x: 0, y: tileSize * 0.36, duration: 0.38)]),
+            .fadeOut(withDuration: 0.16),
+            .removeFromParent()
         ]))
     }
 
-    private func dismissModal() {
-        guard let modal = modalCard else { return }
-        let action = modalPrimaryAction
-        modalCard = nil
-        modalPrimaryAction = nil
-        modal.run(.sequence([
-            .fadeOut(withDuration: 0.15),
-            .removeFromParent(),
-            .run { action?() }
-        ]))
-    }
-
-    private func spawnConfetti() {
-        let confetti = Effects.makeConfetti(width: size.width)
-        confetti.position = CGPoint(x: 0, y: size.height / 2 + 20)
-        addChild(confetti)
-        confetti.run(.sequence([.wait(forDuration: 2.6), .removeFromParent()]))
-    }
-
-    private func applyCollapseAndRefill() {
-        let oldGrid = grid
-        let newGrid = Engine.collapseAndRefill(grid, colors: palette, mask: levelConfig.layout.mask)
-        grid = newGrid
-
-        var newNodes: [[SKNode?]] = Array(repeating: Array(repeating: nil, count: cols), count: rows)
-        let idToNode = nodeIdMap(in: oldGrid)
-
-        let fallDur: TimeInterval = 0.22
-
-        for r in 0..<rows {
-            for c in 0..<cols {
-                guard let cell = newGrid[r][c] else { continue }
-                if let existing = idToNode[cell.id] {
-                    newNodes[r][c] = existing
-                    existing.run(.move(to: point(forRow: r, col: c), duration: fallDur))
-                } else {
-                    let node = makeTileNode(for: cell)
-                    let spawnY = size.height / 2 + tileSize
-                    node.position = CGPoint(x: point(forRow: r, col: c).x, y: spawnY)
-                    worldNode.addChild(node)
-                    node.run(.move(to: point(forRow: r, col: c), duration: fallDur))
-                    newNodes[r][c] = node
-                }
-            }
-        }
-        nodes = newNodes
-
-        run(.wait(forDuration: fallDur + 0.02)) { [weak self] in
-            self?.resolveCascade()
-        }
-    }
-
-    private func nodeIdMap(in oldGrid: Grid) -> [String: SKNode] {
-        var map: [String: SKNode] = [:]
-        for r in 0..<rows {
-            for c in 0..<cols {
-                if let cell = oldGrid[r][c], let n = nodes[r][c] {
-                    map[cell.id] = n
-                }
-            }
-        }
-        return map
-    }
 }

@@ -3,8 +3,18 @@ import SpriteKit
 
 final class GameViewController: UIViewController {
 
+    /// Level selected by the map. If nil, the scene falls back to persisted
+    /// progression.
+    var levelNumber: Int?
+
+    /// Called when the player taps "Choose level" on the end-of-level card.
+    /// The host (LevelMapViewController) typically dismisses this VC to return
+    /// to the level map.
+    var onChooseLevel: (() -> Void)?
+
     private let gradient = CAGradientLayer()
     private var skView: SKView!
+    private var didPresentScene = false
 
     override func loadView() {
         // Replace the storyboard's SKView root with a plain UIView so the
@@ -24,21 +34,30 @@ final class GameViewController: UIViewController {
         sk.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         sk.allowsTransparency = true
         sk.backgroundColor = .clear
-        sk.ignoresSiblingOrder = true
+        sk.ignoresSiblingOrder = false
         sk.showsFPS = false
         sk.showsNodeCount = false
         view.addSubview(sk)
         skView = sk
-
-        let scene = GameScene(size: sk.bounds.size)
-        scene.scaleMode = .resizeFill
-        scene.backgroundColor = .clear
-        sk.presentScene(scene)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         gradient.frame = view.bounds
+        presentGameSceneIfNeeded()
+    }
+
+    private func presentGameSceneIfNeeded() {
+        guard !didPresentScene else { return }
+        guard skView.bounds.width > 0, skView.bounds.height > 0 else { return }
+        didPresentScene = true
+
+        let scene = GameScene(size: skView.bounds.size)
+        scene.initialLevel = levelNumber
+        scene.scaleMode = .resizeFill
+        scene.backgroundColor = .clear
+        scene.onChooseLevel = { [weak self] in self?.onChooseLevel?() }
+        skView.presentScene(scene)
     }
 
     private func setupGradient() {

@@ -210,9 +210,14 @@ final class SettingsCard: SKNode {
         addToggleRow(card: content, key: "gameCenter",
                      title: String(localized: "Game Center"), emoji: "🎮",
                      initialOn: Persistence.gameCenterOptIn, atY: y)
+        y -= 56
+        let promiseHeight = addFairPlayPromise(card: content,
+                                               width: viewportWidth - 16,
+                                               atY: y)
 
         let totalRows = rows.count + actionRows.count
-        let contentHeight = topScrollInset + rowHeight + CGFloat(max(0, totalRows - 1)) * rowStep + bottomScrollInset
+        let contentHeight = topScrollInset + rowHeight + CGFloat(max(0, totalRows - 1)) * rowStep
+            + promiseHeight + 16 + bottomScrollInset
         maxScrollOffset = max(0, contentHeight - viewportHeight)
 
         let topMist = SKShapeNode(rectOf: CGSize(width: viewportWidth - 8, height: 10),
@@ -323,6 +328,48 @@ final class SettingsCard: SKNode {
     }
 
     // MARK: - Rows
+
+    /// Small statement panel at the end of the settings scroll — the player-
+    /// facing version of the store positioning. Returns the panel height so
+    /// the scroll content size can account for it.
+    private func addFairPlayPromise(card: SKNode, width: CGFloat, atY y: CGFloat) -> CGFloat {
+        let lines: [String] = [
+            String(localized: "Every level is beatable without paying."),
+            String(localized: "No forced ads. No fake difficulty."),
+            String(localized: "One daily board, identical for everyone.")
+        ]
+        let lineStep: CGFloat = 19
+        let panelHeight: CGFloat = 44 + CGFloat(lines.count) * lineStep
+        let panel = SKShapeNode(rectOf: CGSize(width: width, height: panelHeight), cornerRadius: 14)
+        panel.fillColor = UIColor(hex: "#FDF2F8")
+        panel.strokeColor = UIColor(hex: "#FBCFE8")
+        panel.lineWidth = 1
+        panel.position = CGPoint(x: 0, y: y - panelHeight / 2 + 24)
+        card.addChild(panel)
+
+        let heading = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        heading.text = String(localized: "Our Fair Play Promise 🍒")
+        heading.fontSize = 13
+        heading.fontColor = UIColor(hex: "#BE185D")
+        heading.verticalAlignmentMode = .center
+        heading.horizontalAlignmentMode = .center
+        heading.position = CGPoint(x: 0, y: panelHeight / 2 - 20)
+        panel.addChild(heading)
+
+        var lineY = panelHeight / 2 - 44
+        for text in lines {
+            let line = SKLabelNode(fontNamed: "AvenirNext-Medium")
+            line.text = text
+            line.fontSize = 11.5
+            line.fontColor = UIColor(hex: "#475569")
+            line.verticalAlignmentMode = .center
+            line.horizontalAlignmentMode = .center
+            line.position = CGPoint(x: 0, y: lineY)
+            panel.addChild(line)
+            lineY -= lineStep
+        }
+        return panelHeight
+    }
 
     private func addActionRow(card: SKNode, key: String, title: String, subtitle: String,
                               emoji: String, buttonTitle: String, enabled: Bool, atY y: CGFloat) {

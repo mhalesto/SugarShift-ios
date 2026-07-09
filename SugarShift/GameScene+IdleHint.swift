@@ -29,6 +29,13 @@ extension GameScene {
 
     func cancelIdleHint() {
         removeAction(forKey: "idleHint")
+        removeAction(forKey: "idleHintAutoClear")
+        clearHintVisuals()
+    }
+
+    /// Removes any on-screen hint rings, tile pulses, and the arrow. Idempotent —
+    /// safe to call before drawing a fresh hint so visuals never accumulate.
+    func clearHintVisuals() {
         for ring in hintRings { ring.removeFromParent() }
         hintRings.removeAll()
         for tile in hintTiles {
@@ -50,6 +57,8 @@ extension GameScene {
         guard let move = Engine.findHintMove(grid) else { return }
         guard let nodeA = nodes[move.0.r][move.0.c],
               let nodeB = nodes[move.1.r][move.1.c] else { return }
+        // Clear any existing hint first so rings/arrows never pile up on the board.
+        clearHintVisuals()
         hintShownThisLevel += 1
 
         // Soft yellow rings under the suggested pair, breathing in/out
@@ -74,6 +83,11 @@ extension GameScene {
         let arrow = makeHintArrow(from: nodeA.position, to: nodeB.position)
         worldNode.addChild(arrow)
         hintArrow = arrow
+
+        // Auto-dismiss so a hint never lingers on the board indefinitely.
+        run(.sequence([.wait(forDuration: 4.0),
+                       .run { [weak self] in self?.clearHintVisuals() }]),
+            withKey: "idleHintAutoClear")
     }
 
     func makeHintRing(radius: CGFloat) -> SKNode {

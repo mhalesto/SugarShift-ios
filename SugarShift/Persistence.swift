@@ -169,6 +169,12 @@ enum Persistence {
         return max(0, next.timeIntervalSinceNow)
     }
 
+    /// Wall-clock date the next life lands, or nil when at max. Feeds the
+    /// widget snapshot and the Live Activity countdown.
+    static var nextLifeAt: Date? {
+        LifeState.load().nextLifeAt(at: Date())
+    }
+
     /// "5:32" style countdown for the HUD next to the lives heart.
     static var nextLifeCountdownText: String {
         let s = Int(secondsUntilNextLife.rounded(.up))
@@ -345,7 +351,7 @@ enum Persistence {
         set { d.set(newValue, forKey: K.sound) }
     }
     static var musicEnabled: Bool {
-        get { storedBool(K.music, default: true) }
+        get { storedBool(K.music, default: false) }
         set { d.set(newValue, forKey: K.music) }
     }
     static var hapticsEnabled: Bool {
@@ -798,6 +804,7 @@ enum Persistence {
         var claimedBossRewards: [String: Bool]
         var medals: [String: Int]?
         var ratings: [String: Int]?
+        var storeKitCoinCredits: [String: Int]?
     }
 
     static func exportBackendState() -> BackendState {
@@ -826,7 +833,8 @@ enum Persistence {
             claimedEventRewards: boolMap(prefix: K.eventRewardPrefix),
             claimedBossRewards: boolMap(prefix: K.bossRewardPrefix),
             medals: intMap(prefix: K.medalsPrefix),
-            ratings: intMap(prefix: K.ratingPrefix)
+            ratings: intMap(prefix: K.ratingPrefix),
+            storeKitCoinCredits: nil
         )
     }
 
@@ -878,7 +886,18 @@ enum Persistence {
         let themes = Set(d.stringArray(forKey: K.themes) ?? []).union(state.unlockedThemes)
         d.set(Array(themes).sorted(), forKey: K.themes)
 
-        let transactions = deliveredStoreKitTransactionIDs.union(state.deliveredStoreKitTransactionIDs)
+        let localTransactions = deliveredStoreKitTransactionIDs
+        if let storeKitCoinCredits = state.storeKitCoinCredits {
+            let newCredits = storeKitCoinCredits
+                .filter { id, coins in !localTransactions.contains(id) && coins > 0 }
+                .values
+                .reduce(0, +)
+            if newCredits > 0 {
+                d.set(storedInt(K.cash, default: Economy.startingCash) + newCredits, forKey: K.cash)
+            }
+        }
+
+        let transactions = localTransactions.union(state.deliveredStoreKitTransactionIDs)
         d.set(Array(transactions).sorted(), forKey: K.storeKitDeliveredTransactions)
 
         mergeIntMap(prefix: K.starsPrefix, remote: state.stars)

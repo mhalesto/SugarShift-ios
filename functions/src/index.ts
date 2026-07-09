@@ -28,7 +28,6 @@ const progressKeys = new Set([
   "dailyAdBonusDate",
   "dailyStreak",
   "unlockedThemes",
-  "deliveredStoreKitTransactionIDs",
   "stars",
   "claimedRewards",
   "claimedThreeStarRewards",
@@ -326,7 +325,6 @@ function sanitizeProgress(rawState: unknown): PlainRecord {
 
     switch (key) {
     case "unlockedThemes":
-    case "deliveredStoreKitTransactionIDs":
       output[key] = sanitizeStringArray(value);
       break;
     case "stars":
@@ -382,6 +380,14 @@ export const syncProgress = onCall({ region }, async (request) => {
   return { ok: true };
 });
 
+export const pullProgress = onCall({ region }, async (request) => {
+  const data = assertRecord(request.data ?? {}, "payload");
+  const uid = await requireUid(request.auth, data);
+  const snapshot = await db.doc(`users/${uid}/state/progress`).get();
+
+  return { ok: true, state: snapshot.exists ? snapshot.data() ?? {} : {} };
+});
+
 export const recordStoreKitDelivery = onCall({ region }, async (request) => {
   const data = assertRecord(request.data, "payload");
   const uid = await requireUid(request.auth, data);
@@ -389,9 +395,24 @@ export const recordStoreKitDelivery = onCall({ region }, async (request) => {
   const productID = stringValue(data, "productID");
   const coins = numberValue(data, "coins", 1, 100_000);
   const clientUpdatedAt = typeof data.clientUpdatedAt === "number" ? data.clientUpdatedAt : null;
+  const progressUpdatedAt = clientUpdatedAt ?? Date.now() / 1000;
   const appStoreValidation = await validateStoreKitDelivery(transactionID, productID, coins);
   const transactionRef = db.doc(`users/${uid}/storeKitTransactions/${transactionID}`);
   const globalTransactionRef = db.doc(`storeKitTransactions/${transactionID}`);
+  const progressRef = db.doc(`users/${uid}/state/progress`);
+  const progressCredit = {
+    schemaVersion: 1,
+    clientUpdatedAt: progressUpdatedAt,
+    serverUpdatedAt: FieldValue.serverTimestamp(),
+    deliveredStoreKitTransactionIDs: FieldValue.arrayUnion(transactionID),
+    storeKitCoinCredits: {
+      [transactionID]: coins,
+    },
+  };
+  const userUpdate = {
+    updatedAt: FieldValue.serverTimestamp(),
+    lastStoreKitDeliveryAt: FieldValue.serverTimestamp(),
+  };
 
   let alreadyRecorded = false;
   await db.runTransaction(async (transaction) => {
@@ -400,7 +421,35 @@ export const recordStoreKitDelivery = onCall({ region }, async (request) => {
       transaction.get(globalTransactionRef),
     ]);
     if (existingUserRecord.exists || existingGlobalRecord.exists) {
+      const globalData = existingGlobalRecord.data();
+      const globalOwnerUid = typeof globalData?.uid === "string" ? globalData.uid : null;
+      if (existingGlobalRecord.exists && globalOwnerUid !== uid) {
+        throw new HttpsError("permission-denied", "StoreKit transaction was already delivered.");
+      }
+
       alreadyRecorded = true;
+      if (!existingUserRecord.exists) {
+        transaction.set(transactionRef, {
+          uid,
+          productID,
+          coins,
+          clientUpdatedAt,
+          appStore: appStoreValidation,
+          recordedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      if (!existingGlobalRecord.exists) {
+        transaction.set(globalTransactionRef, {
+          uid,
+          productID,
+          coins,
+          clientUpdatedAt,
+          appStore: appStoreValidation,
+          recordedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      transaction.set(progressRef, progressCredit, { merge: true });
+      transaction.set(db.doc(`users/${uid}`), userUpdate, { merge: true });
       return;
     }
 
@@ -415,10 +464,8 @@ export const recordStoreKitDelivery = onCall({ region }, async (request) => {
 
     transaction.set(globalTransactionRef, ledgerRecord);
     transaction.set(transactionRef, ledgerRecord);
-    transaction.set(db.doc(`users/${uid}`), {
-      updatedAt: FieldValue.serverTimestamp(),
-      lastStoreKitDeliveryAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
+    transaction.set(progressRef, progressCredit, { merge: true });
+    transaction.set(db.doc(`users/${uid}`), userUpdate, { merge: true });
   });
 
   return { ok: true, alreadyRecorded };

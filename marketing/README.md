@@ -83,6 +83,38 @@ Edit `specs[]` inside `marketing/render_marketing.swift` to change
 tags/headlines/colors. Until `raw/06-game-level200-finale.png` is captured,
 the renderer falls back to the old level 100 finale screenshot.
 
+### 3. App Store fullbleed sets (the ones we actually submit)
+
+The submitted screenshots come from `marketing/new/scripts/render_appstore_fullbleed.swift`
+(no device mockups — 2.3.10). The fish-hero and daily-board raws are staged
+showcase scenes (DEBUG builds only), captured with the marketing-scene launch flag:
+
+```bash
+BUNDLE_ID="com.currenttech.SugarShift"
+
+# Pre-set BEFORE the first launch, or the notification permission alert sits
+# over the board (it's a SpringBoard alert — it survives app relaunches; only
+# answering it or rebooting the simulator clears it).
+xcrun simctl spawn booted defaults write "$BUNDLE_ID" ss.pushAuthRequested -bool true
+
+showcase() {  # showcase <output-path> <scene-kind>
+    xcrun simctl terminate booted "$BUNDLE_ID" || true
+    xcrun simctl launch booted "$BUNDLE_ID" --sugarshift-marketing-scene "$2"
+    sleep 4
+    xcrun simctl io booted screenshot "$1"
+}
+
+# iPhone 17 Pro Max simulator booted:
+showcase marketing/new/raw-real-iphone/14-fish-hero.png   fish-hero
+showcase marketing/new/raw-real-iphone/15-daily-board.png daily-board
+
+# iPad Pro 13-inch (M4) simulator booted:
+showcase marketing/new/raw-ipad/09-fish-hero.png   fish-hero
+showcase marketing/new/raw-ipad/10-daily-board.png daily-board
+
+swift marketing/new/scripts/render_appstore_fullbleed.swift
+```
+
 ## Notes on visuals
 
 The simulator's iOS 26.3 emoji font isn't usable from `SKLabelNode`, so the game

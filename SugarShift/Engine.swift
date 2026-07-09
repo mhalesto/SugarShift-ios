@@ -6,6 +6,9 @@ enum Special: String, Equatable {
     case wrapped
     case colorBomb = "color-bomb"
     case bomb
+    /// Seeker. Created by a 2x2 square match; on activation it targets a goal
+    /// tile or blocker (handled by the scene) plus a small local splash.
+    case fish
 }
 
 enum CellKind: Hashable {
@@ -216,7 +219,9 @@ enum Engine {
             case .stripedCol:
                 for r in 0..<rows { add(r, p.c) }
             case .wrapped:
-                let radius = bigger ? 2 : 1
+                // Wrapped now clears a wider blast than a bomb's 3x3 to feel
+                // like the genre's double-detonation.
+                let radius = bigger ? 3 : 2
                 for dr in -radius...radius {
                     for dc in -radius...radius { add(p.r + dr, p.c + dc) }
                 }
@@ -227,6 +232,12 @@ enum Engine {
                         if grid[r][c]?.color == target { add(r, c) }
                     }
                 }
+            case .fish:
+                // Local splash; the goal-seeking target is added by the scene,
+                // which knows the level objective.
+                add(p.r, p.c)
+                add(p.r - 1, p.c); add(p.r + 1, p.c)
+                add(p.r, p.c - 1); add(p.r, p.c + 1)
             }
         }
         return out
@@ -561,7 +572,11 @@ enum Engine {
         if isColorBombSwap(grid, a, b) {
             return (true, g)
         }
-        if createsMatch(g, at: a) || createsMatch(g, at: b) {
+        let createsNewMatch = (createsMatch(g, at: a) && !createsMatch(grid, at: a))
+            || (createsMatch(g, at: b) && !createsMatch(grid, at: b))
+        let createsNewSquare = (createsSquare(g, at: a) && !createsSquare(grid, at: a))
+            || (createsSquare(g, at: b) && !createsSquare(grid, at: b))
+        if createsNewMatch || createsNewSquare {
             return (true, g)
         }
         return (false, grid)
@@ -640,10 +655,15 @@ enum Engine {
                                (grid[b.r][b.c]?.special != nil)
         let groups = findMatchGroups(swappedGrid)
         let createdSpawn = specialSpawn(from: groups)
+        let createsFish = findSquares(swappedGrid).contains { square in
+            (square.contains(a) || square.contains(b))
+                && !isUniformPlainSquare(grid, square)
+        }
         let longestRun = groups.map(\.count).max() ?? 0
 
         var score = 0
         if activatesSpecial { score += 1_000 }
+        if createsFish { score += 250 }
         if let spawn = createdSpawn {
             switch spawn.special {
             case .bomb:        score += 500
@@ -651,6 +671,7 @@ enum Engine {
             case .wrapped:     score += 300
             case .stripedRow,
                  .stripedCol:  score += 200
+            case .fish:        score += 250
             }
         }
         score += longestRun * 10
@@ -710,5 +731,51 @@ enum Engine {
         y = p.r + 1
         while y < rows, g[y][p.c]?.color == color { cnt += 1; y += 1 }
         return cnt >= 3
+    }
+
+    /// A 2x2 block of identical-colour plain tiles — a new match type that
+    /// spawns a Fish special.
+    private static func isUniformPlainSquare(_ g: Grid, _ quad: [Pos]) -> Bool {
+        guard let first = g[quad[0].r][quad[0].c],
+              first.blocker == nil, first.kind == .normal, first.special == nil else { return false }
+        for p in quad.dropFirst() {
+            guard let cell = g[p.r][p.c],
+                  cell.blocker == nil, cell.kind == .normal, cell.special == nil,
+                  cell.color == first.color else { return false }
+        }
+        return true
+    }
+
+    /// Every 2x2 same-colour plain square on the board (each as four positions).
+    static func findSquares(_ grid: Grid) -> [[Pos]] {
+        let rows = grid.count
+        let cols = rows > 0 ? grid[0].count : 0
+        guard rows > 1, cols > 1 else { return [] }
+        var squares: [[Pos]] = []
+        for r in 0..<(rows - 1) {
+            for c in 0..<(cols - 1) {
+                let quad = [Pos(r: r, c: c), Pos(r: r, c: c + 1),
+                            Pos(r: r + 1, c: c), Pos(r: r + 1, c: c + 1)]
+                if isUniformPlainSquare(grid, quad) { squares.append(quad) }
+            }
+        }
+        return squares
+    }
+
+    /// Whether `p` is part of any 2x2 same-colour plain square — lets a swap that
+    /// forms a square count as a valid move.
+    static func createsSquare(_ g: Grid, at p: Pos) -> Bool {
+        let rows = g.count
+        let cols = rows > 0 ? g[0].count : 0
+        for dr in -1...0 {
+            for dc in -1...0 {
+                let r = p.r + dr, c = p.c + dc
+                guard r >= 0, c >= 0, r + 1 < rows, c + 1 < cols else { continue }
+                let quad = [Pos(r: r, c: c), Pos(r: r, c: c + 1),
+                            Pos(r: r + 1, c: c), Pos(r: r + 1, c: c + 1)]
+                if isUniformPlainSquare(g, quad) { return true }
+            }
+        }
+        return false
     }
 }

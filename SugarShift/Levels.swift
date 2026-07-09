@@ -176,6 +176,11 @@ struct DailyChallenge {
     let dateKey: String
     let level: Int
     let reward: LevelReward
+    /// Global challenge index (#1 = 2026-01-01). Shown in the share text.
+    let number: Int
+    /// Deterministic board seed derived from `dateKey` — every player in the
+    /// world gets the identical board and refill stream for this challenge.
+    let seed: UInt64
 }
 
 struct SugarEvent: Equatable {
@@ -406,35 +411,35 @@ enum Levels {
         if level == endlessLevel { return endlessConfig() }
         let n = max(1, min(level, count))
         switch n {
-        case 1:  return mk(n, 5, 5, 3, 28,  300,  .starter,   .midnight,
+        case 1:  return mk(n, 5, 5, 3, 28,  1_100,  .starter,   .midnight,
                            layout(mask: nil),
                            "Three fruits, big tiles — find your rhythm.")
-        case 2:  return mk(n, 6, 6, 3, 28,  500,  .starter,   .midnight,
+        case 2:  return mk(n, 6, 6, 3, 28,  1_700,  .starter,   .midnight,
                            layout(mask: nil),
                            "Same three fruits, a little more room.")
-        case 3:  return mk(n, 6, 6, 4, 29,  700,  .starter,   .midnight,
+        case 3:  return mk(n, 6, 6, 4, 29,  2_300,  .starter,   .midnight,
                            layout(mask: nil),
                            "A new fruit joins the mix.")
-        case 4:  return mk(n, 7, 7, 4, 30,  900,  .starter,   .midnight,
+        case 4:  return mk(n, 7, 7, 4, 30,  2_900,  .starter,   .midnight,
                            layout(mask: diamond7()),
                            "Diamond board — clean shape, four fruits.")
-        case 5:  return mk(n, 7, 7, 4, 31, 1000,  .ice,       .glacier,
+        case 5:  return mk(n, 7, 7, 4, 31, 3_300,  .ice,       .glacier,
                            layout(mask: octagon7(cut: 1), ice: 2),
                            "Frost forms — crack a few tiles.", goal: .score, bomb: 5)
-        case 6:  return mk(n, 7, 7, 4, 31, 1200,  .starter,   .glacier,
+        case 6:  return mk(n, 7, 7, 4, 31, 2_700,  .starter,   .glacier,
                            layout(mask: hourglass7()),
                            "Hourglass shape — five fruits now.",
-                           goal: .collectColor(index: n % 4, count: 6))
-        case 7:  return mk(n, 8, 8, 4, 32, 1600,  .combo,     .glacier,
+                           goal: .collectColor(index: n % 4, count: 18))
+        case 7:  return mk(n, 8, 8, 4, 32, 3_900,  .combo,     .glacier,
                            layout(mask: donut8()),
                            "Bigger canvas — match around the hole.")
-        case 8:  return mk(n, 8, 8, 4, 32, 1800,  .ice,       .glacier,
+        case 8:  return mk(n, 8, 8, 4, 32, 4_200,  .ice,       .glacier,
                            layout(mask: plus8(), ice: 3),
                            "Plus-shape & deep frost.")
-        case 9:  return mk(n, 8, 8, 4, 31, 2100,  .bombRush,  .sunset,
+        case 9:  return mk(n, 8, 8, 4, 31, 4_600,  .bombRush,  .sunset,
                            layout(mask: arrow8(), startingBombs: 2),
                            "Arrow board — bombs pre-loaded.", bomb: 4)
-        case 10: return mk(n, 9, 9, 5, 33, 2500,  .starter,   .sunset,
+        case 10: return mk(n, 9, 9, 5, 33, 5_200,  .starter,   .sunset,
                            layout(mask: full9()),
                            "9×9 — bigger canvas.")
         case 11: return mk(n, 8, 8, 5, 33, 2600,  .combo,     .sunset,
@@ -1254,18 +1259,34 @@ enum Levels {
                            swaps: swapBonus)
     }
 
+    /// The day the global daily challenge counter starts: #1 = 2026-01-01.
+    private static let dailyEpoch = DateComponents(year: 2026, month: 1, day: 1)
+
     static func dailyChallenge(on date: Date = Date()) -> DailyChallenge {
-        let calendar = Calendar.current
+        // Fixed Gregorian calendar (local timezone) so every device picks the
+        // same level and seed regardless of the user's calendar preference.
+        // The day rolls at local midnight, Wordle-style.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone.current
         let start = calendar.startOfDay(for: date)
         let day = calendar.ordinality(of: .day, in: .era, for: start) ?? 1
         let level = 1 + ((day * 37) % count)
         let formatter = DateFormatter()
         formatter.calendar = calendar
+        // POSIX locale keeps the digits Western Arabic everywhere — the key
+        // feeds the shared board seed, so it must be byte-identical worldwide.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         let key = formatter.string(from: start)
+        let epochStart = calendar.date(from: dailyEpoch).map { calendar.startOfDay(for: $0) } ?? start
+        let number = max(1, (calendar.dateComponents([.day], from: epochStart, to: start).day ?? 0) + 1)
         let reward = LevelReward(title: String(localized: "Daily clear"),
                                  coins: 180, lives: 0, shuffles: 1, hammers: 1, swaps: 1)
-        return DailyChallenge(dateKey: key, level: level, reward: reward)
+        return DailyChallenge(dateKey: key,
+                              level: level,
+                              reward: reward,
+                              number: number,
+                              seed: LevelSeed.dailySeed(dateKey: key, level: level))
     }
 
     static func dailyStreakReward(streak: Int) -> LevelReward? {

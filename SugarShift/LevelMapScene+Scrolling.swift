@@ -165,7 +165,9 @@ extension LevelMapScene {
         let daily = Levels.dailyChallenge()
         let claimed = Persistence.hasClaimedDailyReward(daily.dateKey)
         let title = claimed ? String(localized: "Daily cleared") : String(localized: "Daily Challenge")
-        showLevelPreview(level: daily.level, titleOverride: title)
+        showLevelPreview(level: daily.level,
+                         titleOverride: title,
+                         dailyChallenge: daily)
         Analytics.track("daily_preview_opened",
                         properties: ["level": "\(daily.level)",
                                      "date": daily.dateKey,
@@ -430,16 +432,19 @@ extension LevelMapScene {
         #endif
     }
 
-    func showLevelPreview(level: Int, titleOverride: String?) {
+    func showLevelPreview(level: Int,
+                          titleOverride: String?,
+                          dailyChallenge: DailyChallenge? = nil) {
         levelPreviewCard?.removeFromParent()
         previewLevel = level
+        previewDailyChallenge = dailyChallenge
 
         let config = Levels.config(for: level)
         let chapter = Levels.chapter(for: level)
-        let daily = Levels.dailyChallenge()
+        let daily = dailyChallenge
         let events = Levels.activeEvents()
         let matchingEvents = events.filter { $0.level == level }
-        let isDaily = level == daily.level
+        let isDaily = daily != nil
         let stars = Persistence.starsForLevel(level)
         var baseRows: [(String, String)] = [
             (String(localized: "Difficulty"), config.difficulty.displayName),
@@ -453,11 +458,17 @@ extension LevelMapScene {
         if !config.modifiers.isEmpty {
             baseRows.insert(("Rules", config.modifiers.map(\.title).joined(separator: ", ")), at: 6)
         }
-        let dailyRows: [(String, String)] = isDaily ? [
-            (String(localized: "Daily"), Persistence.hasClaimedDailyReward(daily.dateKey) ? String(localized: "Reward claimed today") : daily.reward.summary),
-            ("Streak", "\(Persistence.dailyStreak) days"),
-            ("Tomorrow", Levels.tomorrowDailyRewardPreview().summary)
-        ] : []
+        let dailyRows: [(String, String)]
+        if let daily {
+            dailyRows = [
+                (String(localized: "Daily"), Persistence.hasClaimedDailyReward(daily.dateKey) ? String(localized: "Reward claimed today") : daily.reward.summary),
+                (String(localized: "Shared"), String(localized: "Board #\(daily.number) — same for every player")),
+                ("Streak", "\(Persistence.dailyStreak) days"),
+                ("Tomorrow", Levels.tomorrowDailyRewardPreview().summary)
+            ]
+        } else {
+            dailyRows = []
+        }
         let eventRows: [(String, String)] = matchingEvents.prefix(2).map { event in
             let claimed = Persistence.hasClaimedEventReward(event.id)
             return (event.title, claimed ? String(localized: "Reward claimed") : event.reward.summary)
@@ -623,9 +634,10 @@ extension LevelMapScene {
         while let cur = node {
             if cur.name == "previewPlay" {
                 let level = previewLevel
+                let dailyChallenge = previewDailyChallenge
                 dismissLevelPreview()
                 if let level {
-                    onLevelSelected?(level)
+                    onLevelSelected?(level, dailyChallenge)
                 }
                 return
             }
@@ -641,6 +653,7 @@ extension LevelMapScene {
         levelPreviewCard?.removeFromParent()
         levelPreviewCard = nil
         previewLevel = nil
+        previewDailyChallenge = nil
     }
 
     func bounce(_ node: SKNode) {

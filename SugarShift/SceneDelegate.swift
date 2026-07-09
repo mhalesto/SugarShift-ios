@@ -1,8 +1,7 @@
 import UIKit
 
-/// Owns the app's main window. Routes the launch into the splash screen unless
-/// the dev flag `ss.dev.skipToMap` is set, in which case it lands directly in
-/// the level map (used for screenshots/iteration).
+/// Owns the app's main window. Release always routes through splash; debug can
+/// use launch shortcuts for screenshots and iteration.
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
@@ -26,11 +25,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             window.rootViewController = SplashViewController()
         }
         #else
-        if UserDefaults.standard.bool(forKey: "ss.dev.skipToMap") {
-            window.rootViewController = LevelMapViewController()
-        } else {
-            window.rootViewController = SplashViewController()
-        }
+        window.rootViewController = SplashViewController()
         #endif
         window.makeKeyAndVisible()
         self.window = window
@@ -38,9 +33,19 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidEnterBackground(_ scene: UIScene) {
         Persistence.Cloud.push()
+        WidgetBridge.syncSharedState()
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
         Persistence.Cloud.push()
+        // Live Activities can only be *started* while still foregrounded, so
+        // the life timer is armed here rather than in didEnterBackground.
+        WidgetBridge.syncSharedState()
+        WidgetBridge.refreshLifeActivity()
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        // Lives may have refilled while away — retire a stale island timer.
+        WidgetBridge.refreshLifeActivity()
     }
 }

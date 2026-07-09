@@ -16,7 +16,9 @@ enum LevelBoardFactory {
         var bestSeed = seed
         var bestScore = -1
 
-        for attempt in 0..<max(1, attempts) {
+        let requestedAttempts = max(1, attempts)
+        let safetyAttemptLimit = max(requestedAttempts, 128)
+        for attempt in 0..<safetyAttemptLimit {
             let attemptSeed = seed &+ UInt64(attempt) &* 0x9E3779B97F4A7C15
             var rng = SeededRandomNumberGenerator(seed: attemptSeed)
             var grid = Engine.createInitialGrid(rows: config.rows,
@@ -29,6 +31,8 @@ enum LevelBoardFactory {
             seedIngredients(layout: config.layout, grid: &grid, rng: &rng)
             seedKeys(layout: config.layout, grid: &grid, rng: &rng)
             seedStartingBombs(layout: config.layout, grid: &grid, rng: &rng)
+            guard Engine.findMatches(grid).isEmpty,
+                  Engine.findSquares(grid).isEmpty else { continue }
 
             let score = Engine.bestMoveScore(grid)
             if score > bestScore {
@@ -36,7 +40,7 @@ enum LevelBoardFactory {
                 bestSeed = attemptSeed
                 bestScore = score
             }
-            if score >= minimumOpeningMoveScore {
+            if score >= minimumOpeningMoveScore || attempt + 1 >= requestedAttempts {
                 break
             }
         }
@@ -116,10 +120,14 @@ enum LevelBoardFactory {
         for i in 0..<layout.colorLockCount {
             guard let p = nextPosition() else { break }
             let required = palette[i % max(1, palette.count)]
-            grid[p.r][p.c]?.color = required
+            let color = safeColorLockColor(at: p,
+                                           in: grid,
+                                           palette: palette,
+                                           preferred: required)
+            grid[p.r][p.c]?.color = color
             grid[p.r][p.c]?.blocker = Blocker(type: .colorLock,
                                               hits: 1,
-                                              requiredColor: required)
+                                              requiredColor: color)
         }
 
         for _ in 0..<layout.chocolateCount {
@@ -201,6 +209,26 @@ enum LevelBoardFactory {
         }
     }
 
+    private static func safeColorLockColor(at position: Pos,
+                                           in grid: Grid,
+                                           palette: [String],
+                                           preferred: String) -> String {
+        let current = grid[position.r][position.c]?.color
+        let options = ([preferred] + [current].compactMap { $0 } + palette)
+            .reduce(into: [String]()) { result, color in
+                if !result.contains(color) { result.append(color) }
+            }
+        for color in options {
+            var candidate = grid
+            candidate[position.r][position.c]?.color = color
+            if Engine.findMatches(candidate).isEmpty,
+               Engine.findSquares(candidate).isEmpty {
+                return color
+            }
+        }
+        return current ?? preferred
+    }
+
     private static func repairOpeningMove(in grid: Grid, palette: [String]) -> Grid? {
         guard palette.count >= 2 else { return nil }
         let rows = grid.count
@@ -217,7 +245,8 @@ enum LevelBoardFactory {
                 candidate[p.r][p.c]?.color = index == 2 ? secondary : primary
                 candidate[p.r][p.c]?.special = nil
             }
-            guard Engine.findMatches(candidate).isEmpty else { return nil }
+            guard Engine.findMatches(candidate).isEmpty,
+                  Engine.findSquares(candidate).isEmpty else { return nil }
             return Engine.swapIfValid(candidate, positions[2], positions[3]).didSwap ? candidate : nil
         }
 

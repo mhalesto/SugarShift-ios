@@ -36,11 +36,13 @@ final class EndLevelCard: SKNode {
     var onBonus: (() -> Void)?
     var onRetryForStars: (() -> Void)?
     var onRating: ((Persistence.LevelRating) -> Void)?
+    var onShare: (() -> Void)?    // Daily challenge result share sheet
 
     private let outcome: Outcome
     private let bonusOffer: BonusOffer?
     private let breakdown: Breakdown?
     private let canRetryForStars: Bool
+    private let showShareButton: Bool
     private let showRatingRow: Bool
     private var existingRating: Persistence.LevelRating?
     private let medals: Persistence.MedalSet
@@ -65,7 +67,8 @@ final class EndLevelCard: SKNode {
          canRetryForStars: Bool = false,
          showRatingRow: Bool = false,
          existingRating: Persistence.LevelRating? = nil,
-         medals: Persistence.MedalSet = .none) {
+         medals: Persistence.MedalSet = .none,
+         showShareButton: Bool = false) {
         self.outcome = outcome
         self.bonusOffer = bonusOffer
         self.breakdown = breakdown
@@ -73,6 +76,7 @@ final class EndLevelCard: SKNode {
         self.showRatingRow = showRatingRow
         self.existingRating = existingRating
         self.medals = medals
+        self.showShareButton = showShareButton
         let hasMoveBonus: Bool = {
             if case .win(_, _, _, let moveBonus) = outcome {
                 return moveBonus != nil
@@ -308,15 +312,40 @@ final class EndLevelCard: SKNode {
             return
         }
 
-        // Primary button (Next / Retry)
-        let primary = makeButton(text: isWin ? String(localized: "Next Level") : String(localized: "Retry"),
-                                 fill: UIColor(hex: "#F472B6"),
-                                 textColor: .white,
-                                 width: cardSize.width - 56,
-                                 height: 50,
-                                 name: "primaryBtn")
-        primary.position = CGPoint(x: 0, y: primaryY)
-        card.addChild(primary)
+        // Primary button (Next / Retry). A daily-challenge win shares the row
+        // with the Share button — the share is the growth loop, keep it big.
+        if showShareButton {
+            let rowW = cardSize.width - 56
+            let gap: CGFloat = 10
+            let primaryW = (rowW - gap) * 0.56
+            let shareW = rowW - gap - primaryW
+            let primary = makeButton(text: String(localized: "Next Level"),
+                                     fill: UIColor(hex: "#F472B6"),
+                                     textColor: .white,
+                                     width: primaryW,
+                                     height: 50,
+                                     name: "primaryBtn")
+            primary.position = CGPoint(x: -(shareW + gap) / 2, y: primaryY)
+            card.addChild(primary)
+
+            let share = makeButton(text: String(localized: "Share 📤"),
+                                   fill: UIColor(hex: "#10B981"),
+                                   textColor: .white,
+                                   width: shareW,
+                                   height: 50,
+                                   name: "shareBtn")
+            share.position = CGPoint(x: (primaryW + gap) / 2, y: primaryY)
+            card.addChild(share)
+        } else {
+            let primary = makeButton(text: isWin ? String(localized: "Next Level") : String(localized: "Retry"),
+                                     fill: UIColor(hex: "#F472B6"),
+                                     textColor: .white,
+                                     width: cardSize.width - 56,
+                                     height: 50,
+                                     name: "primaryBtn")
+            primary.position = CGPoint(x: 0, y: primaryY)
+            card.addChild(primary)
+        }
 
         if canRetryForStars {
             let rowW = cardSize.width - 56
@@ -863,6 +892,13 @@ final class EndLevelCard: SKNode {
                 bounce(node)
                 run(.sequence([.wait(forDuration: 0.18), .run { [weak self] in
                     self?.onSecondary?()
+                }]))
+                return true
+            }
+            if node.name == "shareBtn" {
+                bounce(node)
+                run(.sequence([.wait(forDuration: 0.18), .run { [weak self] in
+                    self?.onShare?()
                 }]))
                 return true
             }

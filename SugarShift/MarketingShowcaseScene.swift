@@ -11,6 +11,10 @@ enum SugarShiftMarketingSceneKind: String, CaseIterable {
     case lightning = "lightning"
     case boosters = "boosters"
     case crown = "crown"
+    /// Marquee mechanic shot: a 2×2 square match hatching fish seekers.
+    case fishHero = "fish-hero"
+    /// Shared daily challenge shot: one seeded board for every player.
+    case dailyBoard = "daily-board"
 
     static var current: SugarShiftMarketingSceneKind? {
         let arguments = CommandLine.arguments
@@ -34,6 +38,8 @@ enum SugarShiftMarketingSceneKind: String, CaseIterable {
         case .lightning: 45
         case .boosters: 28
         case .crown: 100
+        case .fishHero: 10
+        case .dailyBoard: Levels.dailyChallenge().level
         }
     }
 
@@ -47,6 +53,8 @@ enum SugarShiftMarketingSceneKind: String, CaseIterable {
         case .lightning: "Lightning Level"
         case .boosters: "Booster Save"
         case .crown: "Sugar Crown"
+        case .fishHero: "Fish to the Rescue"
+        case .dailyBoard: "Today's Board"
         }
     }
 
@@ -60,6 +68,8 @@ enum SugarShiftMarketingSceneKind: String, CaseIterable {
         case .lightning: "Level \(level) • Minimum moves"
         case .boosters: "Level \(level) • Combo rescue"
         case .crown: "Level \(level) • Final candy vault"
+        case .fishHero: "Level \(level) • 2×2 square magic"
+        case .dailyBoard: "Board #\(Levels.dailyChallenge().number) • Identical worldwide"
         }
     }
 
@@ -73,6 +83,8 @@ enum SugarShiftMarketingSceneKind: String, CaseIterable {
         case .lightning: "CHAIN IT!"
         case .boosters: "+5 MOVES"
         case .crown: "UNREAL!"
+        case .fishHero: "FISH!"
+        case .dailyBoard: "SAME BOARD!"
         }
     }
 
@@ -86,6 +98,8 @@ enum SugarShiftMarketingSceneKind: String, CaseIterable {
         case .lightning: UIColor(hex: "#FACC15")
         case .boosters: UIColor(hex: "#34D399")
         case .crown: UIColor(hex: "#F59E0B")
+        case .fishHero: UIColor(hex: "#22D3EE")
+        case .dailyBoard: UIColor(hex: "#34D399")
         }
     }
 
@@ -99,6 +113,8 @@ enum SugarShiftMarketingSceneKind: String, CaseIterable {
         case .lightning: [UIColor(hex: "#111827"), UIColor(hex: "#F59E0B"), UIColor(hex: "#22D3EE")]
         case .boosters: [UIColor(hex: "#064E3B"), UIColor(hex: "#10B981"), UIColor(hex: "#A7F3D0")]
         case .crown: [UIColor(hex: "#1E1B4B"), UIColor(hex: "#6366F1"), UIColor(hex: "#F59E0B")]
+        case .fishHero: [UIColor(hex: "#0F766E"), UIColor(hex: "#22D3EE"), UIColor(hex: "#F472B6")]
+        case .dailyBoard: [UIColor(hex: "#065F46"), UIColor(hex: "#34D399"), UIColor(hex: "#FDE68A")]
         }
     }
 }
@@ -291,11 +307,33 @@ final class SugarShiftMarketingShowcaseScene: SKScene {
         addChild(board)
 
         let playable = playablePositions(rows: rows, cols: cols, mask: mask)
-        let ice = Set(playable.prefix(kind == .frostLocks || kind == .crown ? min(14, playable.count) : config.layout.iceCount))
+        let iceCount: Int = {
+            if kind == .frostLocks || kind == .crown { return min(14, playable.count) }
+            if kind == .fishHero { return 3 }
+            return config.layout.iceCount
+        }()
+        // Fish-hero ice sits in the top corner so the seeker trails have a
+        // visible target to chase.
+        let ice: Set<Pos> = kind == .fishHero
+            ? Set(playable.filter { $0.r <= 1 && $0.c >= cols - 2 }.prefix(iceCount))
+            : Set(playable.prefix(iceCount))
         let locks = Set(playable.dropFirst(max(0, ice.count)).prefix(kind == .frostLocks || kind == .crown ? min(8, max(0, playable.count - ice.count)) : config.layout.lockCount))
         let bombs = Set(playable.reversed().prefix(kind == .bombStorm || kind == .crown ? 4 : config.layout.startingBombs))
         let rowStripe = Set(playable.filter { $0.r == rows / 2 }.prefix(4))
         let colStripe = Set(playable.filter { $0.c == cols / 2 }.suffix(4))
+        // The marquee 2×2: same-colour square mid-board, fish hatching beside it.
+        let squareAnchor = Pos(r: rows / 2, c: max(1, cols / 2 - 1))
+        let square: Set<Pos> = kind == .fishHero ? [
+            squareAnchor,
+            Pos(r: squareAnchor.r, c: squareAnchor.c + 1),
+            Pos(r: squareAnchor.r + 1, c: squareAnchor.c),
+            Pos(r: squareAnchor.r + 1, c: squareAnchor.c + 1)
+        ] : []
+        let fishes: Set<Pos> = kind == .fishHero ? [
+            Pos(r: squareAnchor.r - 1, c: squareAnchor.c + 2),
+            Pos(r: squareAnchor.r - 2, c: squareAnchor.c + 3),
+            Pos(r: squareAnchor.r + 2, c: squareAnchor.c - 1)
+        ] : []
 
         let colors = Array(Theme.colors.prefix(config.colors))
         for r in 0..<rows {
@@ -304,11 +342,21 @@ final class SugarShiftMarketingShowcaseScene: SKScene {
 
                 let p = Pos(r: r, c: c)
                 let node = makeTile(
-                    color: colors[(r * 2 + c * 3 + kind.level) % colors.count],
+                    color: square.contains(p) ? colors[0] : colors[(r * 2 + c * 3 + kind.level) % colors.count],
                     tile: tile,
-                    special: specialFor(pos: p, bombs: bombs, rowStripe: rowStripe, colStripe: colStripe),
+                    special: fishes.contains(p) ? .fish : specialFor(pos: p, bombs: bombs, rowStripe: rowStripe, colStripe: colStripe),
                     blocker: blockerFor(pos: p, ice: ice, locks: locks)
                 )
+                if square.contains(p) {
+                    let glow = SKShapeNode(rectOf: CGSize(width: tile * 0.94, height: tile * 0.94),
+                                           cornerRadius: tile * 0.24)
+                    glow.fillColor = .clear
+                    glow.strokeColor = UIColor(hex: "#22D3EE").withAlphaComponent(0.95)
+                    glow.lineWidth = 3
+                    glow.glowWidth = 8
+                    glow.zPosition = 6
+                    node.addChild(glow)
+                }
                 node.position = CGPoint(
                     x: -boardWidth / 2 + tile * (CGFloat(c) + 0.5),
                     y: boardHeight / 2 - tile * (CGFloat(r) + 0.5)
@@ -336,6 +384,62 @@ final class SugarShiftMarketingShowcaseScene: SKScene {
             drawBoosterRail()
         case .portal, .shapeWorlds:
             drawLevelChips()
+        case .fishHero:
+            drawFishTrails()
+        case .dailyBoard:
+            drawDailyChips()
+        }
+    }
+
+    /// Dotted seeker arcs from the square-match zone toward the iced corner —
+    /// sells "the fish hunts your goal" in a single still frame.
+    private func drawFishTrails() {
+        let start = CGPoint(x: -size.width * 0.10, y: -size.height * 0.04)
+        let targets = [
+            CGPoint(x: size.width * 0.30, y: size.height * 0.22),
+            CGPoint(x: size.width * 0.24, y: size.height * 0.27),
+            CGPoint(x: size.width * 0.34, y: size.height * 0.16)
+        ]
+        for (index, end) in targets.enumerated() {
+            let path = CGMutablePath()
+            path.move(to: start)
+            let lift = CGFloat(60 + index * 26)
+            let control = CGPoint(x: (start.x + end.x) / 2 - 40, y: max(start.y, end.y) + lift)
+            path.addQuadCurve(to: end, control: control)
+
+            let trail = SKShapeNode(path: path.copy(dashingWithPhase: 0, lengths: [10, 9]))
+            trail.strokeColor = UIColor(hex: "#22D3EE").withAlphaComponent(0.85)
+            trail.lineWidth = 4
+            trail.glowWidth = 6
+            trail.lineCap = .round
+            trail.zPosition = 96
+            addChild(trail)
+
+            let fish = SKShapeNode(ellipseOf: CGSize(width: 30, height: 19))
+            fish.fillColor = UIColor(hex: "#22D3EE")
+            fish.strokeColor = UIColor.white.withAlphaComponent(0.9)
+            fish.lineWidth = 2
+            fish.glowWidth = 5
+            fish.position = CGPoint(x: (start.x + end.x) / 2, y: control.y - lift * 0.35)
+            fish.zRotation = 0.5
+            fish.zPosition = 97
+            addChild(fish)
+        }
+    }
+
+    /// "Same board for everyone" pills — kept clear of the wide banner text.
+    private func drawDailyChips() {
+        let y = size.height * 0.355
+        let items: [(String, String)] = [
+            (String(localized: "Everyone"), "globe"),
+            ("#\(Levels.dailyChallenge().number)", "calendar"),
+            (String(localized: "1 board"), "trophy.fill")
+        ]
+        for (i, item) in items.enumerated() {
+            let chip = makeGlassPill(text: item.0, icon: item.1, tint: kind.accent)
+            chip.position = CGPoint(x: CGFloat(i - 1) * (isPad ? 180 : 124), y: y)
+            chip.zPosition = 104
+            addChild(chip)
         }
     }
 
@@ -577,6 +681,13 @@ final class SugarShiftMarketingShowcaseScene: SKScene {
             spark.position = CGPoint(x: tile * 0.18, y: tile * 0.20)
             spark.zPosition = 5
             node.addChild(spark)
+        case .fish:
+            let body = SKShapeNode(ellipseOf: CGSize(width: tile * 0.5, height: tile * 0.32))
+            body.fillColor = UIColor(hex: "#22D3EE").withAlphaComponent(0.9)
+            body.strokeColor = UIColor.white.withAlphaComponent(0.85)
+            body.lineWidth = 2
+            body.zPosition = 4
+            node.addChild(body)
         }
     }
 

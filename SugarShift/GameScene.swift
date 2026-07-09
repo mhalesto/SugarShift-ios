@@ -6,6 +6,7 @@ final class GameScene: SKScene {
     /// on the end-of-level card so the host VC can dismiss back to the map.
     var onChooseLevel: (() -> Void)?
     var initialLevel: Int?
+    var initialDailyChallenge: DailyChallenge?
 
     // MARK: - Config (driven by Levels catalog)
 
@@ -16,23 +17,23 @@ final class GameScene: SKScene {
     var cascadeBoostForLevel: Double {
         let rangeBase: Double
         switch levelNumber {
-        case 1...5:    rangeBase = 0.82
-        case 6...10:   rangeBase = 0.68
-        case 11...15:  rangeBase = 0.54
-        case 16...20:  rangeBase = 0.42
-        case 21...25:  rangeBase = 0.30
-        case 26...50:  rangeBase = 0.20
-        case 51...100: rangeBase = 0.15
-        case 101...150: rangeBase = 0.12
-        default:       rangeBase = 0.09
+        case 1...5:     rangeBase = 0.24
+        case 6...10:    rangeBase = 0.20
+        case 11...15:   rangeBase = 0.16
+        case 16...20:   rangeBase = 0.13
+        case 21...25:   rangeBase = 0.10
+        case 26...50:   rangeBase = 0.08
+        case 51...100:  rangeBase = 0.06
+        case 101...150: rangeBase = 0.05
+        default:        rangeBase = 0.04
         }
 
         let archetypeBoost: Double
         switch levelConfig.archetype {
-        case .starter: archetypeBoost = 0.04
-        case .combo: archetypeBoost = 0.08
-        case .bombRush: archetypeBoost = 0.03
-        case .crowded: archetypeBoost = 0.02
+        case .starter: archetypeBoost = 0.02
+        case .combo: archetypeBoost = 0.03
+        case .bombRush: archetypeBoost = 0.02
+        case .crowded: archetypeBoost = 0.01
         case .ice, .lock, .finale: archetypeBoost = 0
         }
 
@@ -44,14 +45,14 @@ final class GameScene: SKScene {
         case .crownChallenge: difficultyDrag = 0.06
         }
 
-        return min(0.86, max(0, rangeBase + archetypeBoost - difficultyDrag))
+        return min(0.30, max(0, rangeBase + archetypeBoost - difficultyDrag))
     }
 
     /// Boost only applies for the first few automatic cascades; after that we
     /// refill with pure random colors so the chain has to terminate. Keeps
     /// early levels punchy without spinning into an infinite combo loop.
     var currentCascadeBoost: Double {
-        cascadeDepth < 6 ? cascadeBoostForLevel : 0
+        cascadeDepth <= 2 ? cascadeBoostForLevel : 0
     }
     var specialBlastIsExpanded: Bool {
         levelConfig.modifiers.contains(.specialsExplodeBigger)
@@ -109,6 +110,17 @@ final class GameScene: SKScene {
     var cascadeDepth = 0
     var levelAttemptSeed = LevelSeed.make(level: 1)
     var gameplayRNG = SeededRandomNumberGenerator(seed: LevelSeed.make(level: 1, salt: 0x51F7))
+    /// True when this attempt is today's daily challenge. The board comes from
+    /// the shared date seed (identical for every player worldwide), and the
+    /// per-player board mutations (pre-level perks, fail-streak assist) are
+    /// disabled so the leaderboard compares the same puzzle.
+    var isDailyChallengeRun = false
+    /// Exact challenge captured when this attempt was launched. Never
+    /// recomputed at completion because the run can span local midnight.
+    var dailyChallengeRun: DailyChallenge?
+    /// Snapshot of the daily board before the first move — rendered into the
+    /// emoji share grid. Same for everyone, so it spoils nothing.
+    var dailyStartGrid: Grid = []
     /// True when the player damaged a chocolate tile during the current turn.
     /// Reset at the start of each swap; checked at the end of the cascade so
     /// "adjacent matching" actually keeps the spread under control.
@@ -192,6 +204,19 @@ final class GameScene: SKScene {
         let collectedIngredients: Int
         let collectedKeys: Int
         let openedChests: Int
+        let cash: Int
+        let shuffleCount: Int
+        let hammerCount: Int
+        let swapCount: Int
+        let piggyCoins: Int
+        let maxCascadeDepth: Int
+        let totalCascadeClears: Int
+        let objectiveCompletionShown: Bool
+        let boosterUsedThisAttempt: Bool
+        let chainTilesCleared: Int
+        let chainSpecialsTriggered: Int
+        let chainBlockersDamaged: Int
+        let lastChainTierFired: Int
         let chocolateDamagedThisTurn: Bool
         let syrupRow: Int
         let syrupMovesSinceTick: Int
@@ -223,6 +248,7 @@ final class GameScene: SKScene {
 
     // MARK: - Pre-swap ghost preview
     var ghostNodes: [SKNode] = []
+    var specialPreviewNodes: [SKNode] = []
     var ghostTarget: Pos?
 
     // Container for shake (we move this instead of self.position)
@@ -256,7 +282,9 @@ final class GameScene: SKScene {
 
         // Load persisted progress BEFORE building the HUD so the level number,
         // skin, and counts all match what we left off on.
-        levelConfig = Levels.config(for: initialLevel ?? Persistence.currentLevel)
+        levelConfig = Levels.config(for: initialDailyChallenge?.level
+                                    ?? initialLevel
+                                    ?? Persistence.currentLevel)
         rebuildChapterBackdrop()
 
         buildHeaderCard()
@@ -651,10 +679,29 @@ final class GameScene: SKScene {
                                      collectedIngredients: collectedIngredients,
                                      collectedKeys: collectedKeys,
                                      openedChests: openedChests,
+                                     cash: cash,
+                                     shuffleCount: shuffleCount,
+                                     hammerCount: hammerCount,
+                                     swapCount: swapCount,
+                                     piggyCoins: Persistence.piggyCoins,
+                                     maxCascadeDepth: maxCascadeDepth,
+                                     totalCascadeClears: totalCascadeClears,
+                                     objectiveCompletionShown: objectiveCompletionShown,
+                                     boosterUsedThisAttempt: boosterUsedThisAttempt,
+                                     chainTilesCleared: chainTilesCleared,
+                                     chainSpecialsTriggered: chainSpecialsTriggered,
+                                     chainBlockersDamaged: chainBlockersDamaged,
+                                     lastChainTierFired: lastChainTierFired,
                                      chocolateDamagedThisTurn: chocolateDamagedThisTurn,
                                      syrupRow: syrupRow,
                                      syrupMovesSinceTick: syrupMovesSinceTick,
                                      sugarRushCharged: sugarRushCharged)
+        refreshUndoButton()
+    }
+
+    func invalidateUndoSnapshot() {
+        guard undoSnapshot != nil else { return }
+        undoSnapshot = nil
         refreshUndoButton()
     }
 
@@ -665,22 +712,23 @@ final class GameScene: SKScene {
     func performUndo() {
         guard let snapshot = undoSnapshot, !levelEnded else { return }
         if isResolving { return }
-        if freeUndoUsedThisLevel {
-            guard cash >= Economy.undoCost else {
+        let usesFreeUndo = !freeUndoUsedThisLevel
+        let undoCost = usesFreeUndo ? 0 : Economy.undoCost
+        if !usesFreeUndo {
+            guard snapshot.cash >= undoCost else {
                 insufficientCashFeedback()
                 return
             }
-            cash -= Economy.undoCost
             Analytics.track("coin_spend",
                             properties: ["item": "undo",
-                                         "coins": "\(Economy.undoCost)",
+                                         "coins": "\(undoCost)",
                                          "level": "\(levelNumber)"])
         } else {
             freeUndoUsedThisLevel = true
         }
         Analytics.track("undo_used",
                         properties: ["level": "\(levelNumber)",
-                                     "free": "\(!freeUndoUsedThisLevel)"])
+                                     "free": "\(usesFreeUndo)"])
 
         // Remove every visual tile node currently on the board — the snapshot
         // nodes are stale references, so we rebuild from grid state.
@@ -699,12 +747,26 @@ final class GameScene: SKScene {
         collectedIngredients = snapshot.collectedIngredients
         collectedKeys = snapshot.collectedKeys
         openedChests = snapshot.openedChests
+        cash = max(0, snapshot.cash - undoCost)
+        shuffleCount = snapshot.shuffleCount
+        hammerCount = snapshot.hammerCount
+        swapCount = snapshot.swapCount
+        Persistence.piggyCoins = snapshot.piggyCoins
+        maxCascadeDepth = snapshot.maxCascadeDepth
+        totalCascadeClears = snapshot.totalCascadeClears
+        objectiveCompletionShown = snapshot.objectiveCompletionShown
+        boosterUsedThisAttempt = snapshot.boosterUsedThisAttempt
+        chainTilesCleared = snapshot.chainTilesCleared
+        chainSpecialsTriggered = snapshot.chainSpecialsTriggered
+        chainBlockersDamaged = snapshot.chainBlockersDamaged
+        lastChainTierFired = snapshot.lastChainTierFired
         chocolateDamagedThisTurn = snapshot.chocolateDamagedThisTurn
         syrupRow = snapshot.syrupRow
         syrupMovesSinceTick = snapshot.syrupMovesSinceTick
         sugarRushCharged = snapshot.sugarRushCharged
         rebuildAllNodes()
         rebuildSyrupBand()
+        updateComboMeter()
         undoSnapshot = nil
         refreshUndoButton()
         Effects.haptic(.medium)
@@ -1054,7 +1116,10 @@ final class GameScene: SKScene {
         resetComboMeter()
         refreshUndoButton()
         let usefulMoveScore = openingMoveQualityTarget()
-        let requestedSeed = LevelSeed.liveAttempt(level: levelNumber)
+        dailyChallengeRun = initialDailyChallenge
+        isDailyChallengeRun = dailyChallengeRun != nil
+        let requestedSeed = dailyChallengeRun?.seed
+            ?? LevelSeed.liveAttempt(level: levelNumber)
         let board = LevelBoardFactory.makeInitialBoard(config: levelConfig,
                                                        seed: requestedSeed,
                                                        minimumOpeningMoveScore: usefulMoveScore,
@@ -1062,6 +1127,7 @@ final class GameScene: SKScene {
         levelAttemptSeed = board.seed
         gameplayRNG = SeededRandomNumberGenerator(seed: levelAttemptSeed ^ 0x7265706C6179)
         grid = board.grid
+        dailyStartGrid = isDailyChallengeRun ? board.grid : []
         startingBlockers = remainingBlockerCount()
         rebuildAllNodes()
         Analytics.track("level_start",
@@ -1074,17 +1140,24 @@ final class GameScene: SKScene {
                                      "seed": "\(levelAttemptSeed)",
                                      "opening_move_score": "\(board.openingMoveScore)"])
         showLevelIntroHints()
-        showPreLevelPerkChoiceIfNeeded()
-        applyFailStreakAssistIfNeeded()
+        if isDailyChallengeRun {
+            showTeachingToast(key: "daily_shared_board",
+                              text: String(localized: "Daily Challenge — every player gets this exact board!"))
+        } else {
+            // The daily board must stay byte-identical for everyone, so the
+            // per-player perk and assist mutations only run on campaign attempts.
+            showPreLevelPerkChoiceIfNeeded()
+            applyFailStreakAssistIfNeeded()
+        }
         scheduleIdleHint()
     }
 
     func openingMoveQualityTarget() -> Int {
         switch levelNumber {
         case 1...10:
-            return 55
+            return 30
         case 11...25:
-            return 45
+            return 35
         case 26...100:
             return levelConfig.difficulty == .normal ? 38 : 28
         default:
@@ -1168,6 +1241,8 @@ final class GameScene: SKScene {
             showTeachingToast(key: "color_bomb_created", text: String(localized: "Swap a color bomb with any candy."))
         case .bomb:
             showTeachingToast(key: "bomb_created", text: String(localized: "Bombs clear a wide area. Save them for blockers."))
+        case .fish:
+            showTeachingToast(key: "fish_created", text: String(localized: "Fish swim to a blocker or goal tile and clear it."))
         }
     }
 
@@ -1677,7 +1752,7 @@ final class GameScene: SKScene {
                 emoji.alpha = 0.52
             }
         } else {
-            emoji.alpha = cell.special == .colorBomb ? 0.2 : 1.0
+            emoji.alpha = cell.special == .colorBomb ? 0.2 : (cell.special == .fish ? 0.3 : 1.0)
         }
         container.addChild(emoji)
 
@@ -2154,6 +2229,35 @@ final class GameScene: SKScene {
             }
         }
 
+        if cell.special == .fish {
+            let body = SKShapeNode(ellipseOf: CGSize(width: tileSize * 0.6, height: tileSize * 0.4))
+            body.fillColor = UIColor(hex: "#22D3EE").withAlphaComponent(0.92)
+            body.strokeColor = .white
+            body.lineWidth = 2
+            body.zPosition = 4
+            container.addChild(body)
+
+            let tailPath = UIBezierPath()
+            tailPath.move(to: CGPoint(x: tileSize * 0.26, y: 0))
+            tailPath.addLine(to: CGPoint(x: tileSize * 0.44, y: tileSize * 0.16))
+            tailPath.addLine(to: CGPoint(x: tileSize * 0.44, y: -tileSize * 0.16))
+            tailPath.close()
+            let tail = SKShapeNode(path: tailPath.cgPath)
+            tail.fillColor = UIColor(hex: "#22D3EE").withAlphaComponent(0.92)
+            tail.strokeColor = .white
+            tail.lineWidth = 1.5
+            tail.zPosition = 4
+            container.addChild(tail)
+
+            let eye = SKShapeNode(circleOfRadius: tileSize * 0.05)
+            eye.fillColor = .white
+            eye.strokeColor = UIColor(hex: "#0F172A")
+            eye.lineWidth = 1
+            eye.position = CGPoint(x: -tileSize * 0.14, y: tileSize * 0.06)
+            eye.zPosition = 5
+            container.addChild(eye)
+        }
+
         if let blocker = cell.blocker, blocker.type == .countdown {
             let scrim = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
                                     cornerRadius: tileSize * 0.22)
@@ -2201,6 +2305,7 @@ final class GameScene: SKScene {
             case .wrapped:     parts.append(String(localized: "wrapped"))
             case .colorBomb:   parts.append(String(localized: "color bomb"))
             case .bomb:        parts.append(String(localized: "bomb"))
+            case .fish:        parts.append(String(localized: "fish"))
             }
         }
         if cell.kind == .ingredient { parts.append(String(localized: "basket")) }

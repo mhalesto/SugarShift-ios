@@ -277,7 +277,7 @@ extension GameScene {
                 dailyStreak: Persistence.dailyStreak)
         } else if continueBonusOffer == nil {
             pendingLifeLoss = false
-            lives = max(0, lives - 1)
+            lives = max(0, Persistence.lives - 1)
         } else {
             pendingLifeLoss = true
         }
@@ -315,6 +315,12 @@ extension GameScene {
         let displayedMedals = won
             ? Persistence.medalsForLevel(levelNumber)
             : Persistence.MedalSet.none
+        let completedDaily = won ? dailyChallengeRun : nil
+        let isDailyWin = completedDaily != nil
+        if let completedDaily {
+            GameCenterService.shared.submitDailyScore(score,
+                                                      challengeNumber: completedDaily.number)
+        }
         let card = EndLevelCard(outcome: outcome,
                                 sceneSize: size,
                                 bonusOffer: bonusOffer,
@@ -322,7 +328,8 @@ extension GameScene {
                                 canRetryForStars: won && stars < 3,
                                 showRatingRow: existingRating == nil,
                                 existingRating: existingRating,
-                                medals: displayedMedals)
+                                medals: displayedMedals,
+                                showShareButton: isDailyWin)
         card.position = .zero
         card.alpha = 0
         card.setScale(0.7)
@@ -381,6 +388,18 @@ extension GameScene {
                 self?.resetLevel()
             }
         }
+        if isDailyWin {
+            let shareStars = stars
+            let shareScore = score
+            // movesLeft is zeroed during the move-bonus payout before this
+            // runs — starMovesLeft preserves the real moves-to-spare count.
+            let shareMoves = starMovesLeft
+            card.onShare = { [weak self] in
+                self?.presentDailyShareSheet(stars: shareStars,
+                                             score: shareScore,
+                                             movesToSpare: shareMoves)
+            }
+        }
 
         if won {
             Effects.notify(.success)
@@ -389,6 +408,33 @@ extension GameScene {
             Effects.notify(.error)
             Audio.shared.play(.lose)
         }
+    }
+
+    /// Presents the system share sheet with the Wordle-style daily result —
+    /// header, stars/score, and the emoji grid captured for this run.
+    func presentDailyShareSheet(stars: Int, score: Int, movesToSpare: Int) {
+        guard let challenge = dailyChallengeRun else { return }
+        let text = DailyShare.shareText(challenge: challenge,
+                                        stars: stars,
+                                        score: score,
+                                        movesToSpare: movesToSpare,
+                                        startGrid: dailyStartGrid)
+        Analytics.track("daily_share_opened",
+                        properties: ["number": "\(challenge.number)",
+                                     "stars": "\(stars)",
+                                     "score": "\(score)"])
+        guard let presenter = view?.window?.rootViewController else { return }
+        var top = presenter
+        while let presented = top.presentedViewController { top = presented }
+        let sheet = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        if let popover = sheet.popoverPresentationController, let skView = view {
+            popover.sourceView = skView
+            popover.sourceRect = CGRect(x: skView.bounds.midX,
+                                        y: skView.bounds.midY,
+                                        width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+        top.present(sheet, animated: true)
     }
 
     func advanceToLevel(_ n: Int) {
@@ -402,6 +448,9 @@ extension GameScene {
         pendingDoubleRewards = []
         deselect()
         levelConfig = Levels.config(for: n)
+        initialDailyChallenge = nil
+        dailyChallengeRun = nil
+        isDailyChallengeRun = false
         Persistence.currentLevel = max(Persistence.currentLevel, n)
         rebuildChapterBackdrop()
         rebuildHUD()
@@ -434,6 +483,7 @@ extension GameScene {
                                                                           object: nil,
                                                                           queue: .main) { [weak self] _ in
             guard let self else { return }
+            self.invalidateUndoSnapshot()
             self.cash = Persistence.cash
             self.shopCard?.setWallet(self.cash)
             Effects.notify(.success)
@@ -502,11 +552,11 @@ extension GameScene {
             result.threeStar = perfect
         }
 
-        let daily = Levels.dailyChallenge()
-        if levelNumber == daily.level,
+        if let daily = dailyChallengeRun,
            !Persistence.hasClaimedDailyReward(daily.dateKey) {
             applyReward(daily.reward)
             Persistence.markDailyRewardClaimed(daily.dateKey)
+            WidgetBridge.syncSharedState()
             Analytics.track("daily_reward_claimed",
                             properties: ["level": "\(levelNumber)",
                                          "date": daily.dateKey])

@@ -210,22 +210,23 @@ enum LevelSimulationBot {
         return score
     }
 
-    private static func resolveCascades<R: RandomNumberGenerator>(config: LevelConfig,
-                                                                  grid: inout Grid,
-                                                                  rng: inout R,
-                                                                  score: inout Int,
-                                                                  collectedGoalTiles: inout Int,
-                                                                  createdSpecials: inout Int,
-                                                                  detonatedBombs: inout Int,
-                                                                  collectedIngredients: inout Int,
-                                                                  collectedKeys: inout Int,
-                                                                  openedChests: inout Int) -> Int {
+    static func resolveCascades<R: RandomNumberGenerator>(config: LevelConfig,
+                                                         grid: inout Grid,
+                                                         rng: inout R,
+                                                         score: inout Int,
+                                                         collectedGoalTiles: inout Int,
+                                                         createdSpecials: inout Int,
+                                                         detonatedBombs: inout Int,
+                                                         collectedIngredients: inout Int,
+                                                         collectedKeys: inout Int,
+                                                         openedChests: inout Int) -> Int {
         var depth = 0
         var chocolateDamaged = false
 
         while depth < 24 {
             let groups = Engine.findMatchGroups(grid)
-            guard !groups.isEmpty else {
+            let squares = Engine.findSquares(grid)
+            guard !(groups.isEmpty && squares.isEmpty) else {
                 if !chocolateDamaged {
                     let spreads = config.modifiers.contains(.chocolateSpreadsFaster) ? 2 : 1
                     for _ in 0..<spreads {
@@ -243,8 +244,13 @@ enum LevelSimulationBot {
             matches = Engine.expandMatchesWithSpecials(grid,
                                                        matches,
                                                        bigger: config.modifiers.contains(.specialsExplodeBigger))
-            let spawn = Engine.specialSpawn(from: groups,
+            for square in squares { matches.formUnion(square) }
+            var spawn = Engine.specialSpawn(from: groups,
                                             bombRunLength: config.bombSpawnRunLength)
+            if let square = squares.first,
+               spawn == nil || spawn?.special == .stripedRow || spawn?.special == .stripedCol {
+                spawn = SpecialSpawn(position: square[0], special: .fish)
+            }
             let spawnColor = spawn.flatMap { grid[$0.position.r][$0.position.c]?.color }
             let preClear = cellSnapshot(grid, positions: matches)
             let triggeredBombs = triggeredBombCount(in: grid, positions: matches)
@@ -519,27 +525,27 @@ enum LevelSimulationBot {
     }
 
     private static func cascadeBoost(for config: LevelConfig, depth: Int) -> Double {
-        guard depth < 6 else { return 0 }
+        guard depth <= 2 else { return 0 }
 
         let rangeBase: Double
         switch config.number {
-        case 1...5: rangeBase = 0.82
-        case 6...10: rangeBase = 0.68
-        case 11...15: rangeBase = 0.54
-        case 16...20: rangeBase = 0.42
-        case 21...25: rangeBase = 0.30
-        case 26...50: rangeBase = 0.20
-        case 51...100: rangeBase = 0.15
-        case 101...150: rangeBase = 0.12
-        default: rangeBase = 0.09
+        case 1...5: rangeBase = 0.24
+        case 6...10: rangeBase = 0.20
+        case 11...15: rangeBase = 0.16
+        case 16...20: rangeBase = 0.13
+        case 21...25: rangeBase = 0.10
+        case 26...50: rangeBase = 0.08
+        case 51...100: rangeBase = 0.06
+        case 101...150: rangeBase = 0.05
+        default: rangeBase = 0.04
         }
 
         let archetypeBoost: Double
         switch config.archetype {
-        case .starter: archetypeBoost = 0.04
-        case .combo: archetypeBoost = 0.08
-        case .bombRush: archetypeBoost = 0.03
-        case .crowded: archetypeBoost = 0.02
+        case .starter: archetypeBoost = 0.02
+        case .combo: archetypeBoost = 0.03
+        case .bombRush: archetypeBoost = 0.02
+        case .crowded: archetypeBoost = 0.01
         case .ice, .lock, .finale: archetypeBoost = 0
         }
 
@@ -551,6 +557,6 @@ enum LevelSimulationBot {
         case .crownChallenge: difficultyDrag = 0.06
         }
 
-        return min(0.86, max(0, rangeBase + archetypeBoost - difficultyDrag))
+        return min(0.30, max(0, rangeBase + archetypeBoost - difficultyDrag))
     }
 }

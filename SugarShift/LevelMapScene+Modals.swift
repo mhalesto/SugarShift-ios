@@ -21,7 +21,7 @@ extension LevelMapScene {
                 self.settingsCard?.dismiss { [weak self] in
                     guard let self else { return }
                     self.settingsCard = nil
-                    self.onLevelSelected?(Persistence.currentLevel)
+                    self.onLevelSelected?(Persistence.currentLevel, nil)
                 }
             case .resetProgress:
                 self.settingsCard?.dismiss { [weak self] in

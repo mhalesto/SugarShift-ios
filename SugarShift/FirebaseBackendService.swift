@@ -10,9 +10,6 @@ import FirebaseCore
 #if canImport(FirebaseAuth)
 import FirebaseAuth
 #endif
-#if canImport(FirebaseFirestore)
-import FirebaseFirestore
-#endif
 #if canImport(FirebaseFunctions)
 import FirebaseFunctions
 #endif
@@ -264,40 +261,26 @@ final class FirebaseBackendService: NSObject {
             return
         }
 
-        #if canImport(FirebaseAuth) && canImport(FirebaseFirestore)
+        #if canImport(FirebaseAuth) && canImport(FirebaseFunctions)
         guard let user = Auth.auth().currentUser else {
             completion?(.failure(FirebaseBackendError.notSignedIn))
             return
         }
 
-        Firestore.firestore()
-            .collection("users")
-            .document(user.uid)
-            .collection("state")
-            .document("progress")
-            .getDocument { snapshot, error in
-                if let error {
-                    Analytics.track("firebase_progress_pull_failed",
-                                    properties: ["error": "\(error)"])
-                    completion?(.failure(error))
-                    return
-                }
-
-                guard let data = snapshot?.data(), !data.isEmpty else {
-                    completion?(.success(()))
-                    return
-                }
-
-                do {
-                    let state = try Self.decodeBackendState(from: data)
-                    Persistence.applyBackendState(state)
-                    completion?(.success(()))
-                } catch {
-                    Analytics.track("firebase_progress_decode_failed",
-                                    properties: ["error": "\(error)"])
-                    completion?(.failure(error))
-                }
+        user.getIDTokenForcingRefresh(false) { [weak self] token, tokenError in
+            guard let self else { return }
+            if let tokenError {
+                Analytics.track("firebase_progress_pull_failed",
+                                properties: ["error": self.trimmedErrorDescription(tokenError)])
+                completion?(.failure(tokenError))
+                return
             }
+
+            self.callPullProgress(user: user,
+                                  authIDToken: token,
+                                  retriedAfterAuthFailure: false,
+                                  completion: completion)
+        }
         #else
         completion?(.failure(FirebaseBackendError.sdkUnavailable))
         #endif
@@ -389,6 +372,68 @@ final class FirebaseBackendService: NSObject {
             }
     }
 
+    private func callPullProgress(user: User,
+                                  authIDToken: String?,
+                                  retriedAfterAuthFailure: Bool,
+                                  completion: ((Result<Void, Error>) -> Void)?) {
+        var payload: [String: Any] = [:]
+        if let authIDToken {
+            payload["authIDToken"] = authIDToken
+        }
+
+        Functions.functions(region: region)
+            .httpsCallable("pullProgress")
+            .call(payload) { [weak self] result, error in
+                guard let self else { return }
+                if let error {
+                    let failureCategory = self.progressPushFailureCategory(error)
+                    if !retriedAfterAuthFailure,
+                       failureCategory == "unauthenticated" {
+                        user.getIDTokenForcingRefresh(true) { [weak self] refreshedToken, refreshError in
+                            guard let self else { return }
+                            if let refreshError {
+                                Analytics.track("firebase_progress_pull_failed",
+                                                properties: ["error": self.trimmedErrorDescription(refreshError)])
+                                completion?(.failure(refreshError))
+                                return
+                            }
+
+                            self.callPullProgress(user: user,
+                                                  authIDToken: refreshedToken,
+                                                  retriedAfterAuthFailure: true,
+                                                  completion: completion)
+                        }
+                        return
+                    }
+
+                    if retriedAfterAuthFailure, failureCategory == "unauthenticated" {
+                        self.clearRejectedFirebaseSession()
+                    }
+                    Analytics.track("firebase_progress_pull_failed",
+                                    properties: ["error": self.trimmedErrorDescription(error)])
+                    completion?(.failure(error))
+                    return
+                }
+
+                guard let response = result?.data as? [String: Any],
+                      let data = response["state"] as? [String: Any],
+                      !data.isEmpty else {
+                    completion?(.success(()))
+                    return
+                }
+
+                do {
+                    let state = try Self.decodeBackendState(from: data)
+                    Persistence.applyBackendState(state)
+                    completion?(.success(()))
+                } catch {
+                    Analytics.track("firebase_progress_decode_failed",
+                                    properties: ["error": "\(error)"])
+                    completion?(.failure(error))
+                }
+            }
+    }
+
     private func clearRejectedFirebaseSession() {
         #if canImport(FirebaseAuth)
         do {
@@ -470,7 +515,7 @@ final class FirebaseBackendService: NSObject {
         // Remote progress is client-authored except for separate StoreKit ledger
         // calls, so do not trust cloud economy values even if older documents
         // still contain them. Start from local defaults for required fields and
-        // overlay only client-safe progress state from Firestore.
+        // overlay only client-safe progress state from the backend.
         let allowedKeys: Set<String> = [
             "schemaVersion",
             "clientUpdatedAt",
@@ -487,7 +532,8 @@ final class FirebaseBackendService: NSObject {
             "claimedEventRewards",
             "claimedBossRewards",
             "medals",
-            "ratings"
+            "ratings",
+            "storeKitCoinCredits"
         ]
         var cleaned = try encodeBackendState(Persistence.exportBackendState())
         for (key, value) in data where allowedKeys.contains(key) {

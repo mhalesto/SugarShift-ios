@@ -8,6 +8,9 @@ extension GameScene {
         guard let t = touches.first else { return }
         let p = t.location(in: self)
 
+        // Any interaction clears a lingering idle hint so arrows never stack up.
+        cancelIdleHint()
+
         // 0. End-level card takes precedence
         if let card = endLevelCard {
             _ = card.handleTap(at: p)
@@ -312,6 +315,7 @@ extension GameScene {
     func select(_ p: Pos) {
         firstSelection = p
         firstSelectionNode = nodes[p.r][p.c]
+        showSpecialBlastPreview(at: p)
         if let body = firstSelectionNode?.childNode(withName: "body") as? SKShapeNode {
             body.strokeColor = skin.tileHighlight
             body.lineWidth = 3
@@ -329,7 +333,35 @@ extension GameScene {
             body.strokeColor = skin.tileBorder
             body.lineWidth = 1
         }
+        clearSpecialBlastPreview()
         firstSelection = nil
         firstSelectionNode = nil
+    }
+
+    /// When a tile holding a special is selected, highlight the tiles its special
+    /// would clear — teaches what each special does and rewards planning.
+    func showSpecialBlastPreview(at p: Pos) {
+        clearSpecialBlastPreview()
+        guard grid[p.r][p.c]?.special != nil else { return }
+        let area = Engine.expandMatchesWithSpecials(grid, [p], bigger: specialBlastIsExpanded)
+        for q in area where !(q.r == p.r && q.c == p.c) {
+            guard nodes[q.r][q.c] != nil else { continue }
+            let hl = SKShapeNode(rectOf: CGSize(width: tileSize * 0.9, height: tileSize * 0.9),
+                                 cornerRadius: tileSize * 0.2)
+            hl.fillColor = UIColor(hex: "#FACC15").withAlphaComponent(0.20)
+            hl.strokeColor = UIColor(hex: "#FBBF24").withAlphaComponent(0.7)
+            hl.lineWidth = 2
+            hl.position = point(forRow: q.r, col: q.c)
+            hl.zPosition = 60
+            hl.run(.repeatForever(.sequence([.fadeAlpha(to: 0.5, duration: 0.4),
+                                             .fadeAlpha(to: 1.0, duration: 0.4)])))
+            worldNode.addChild(hl)
+            specialPreviewNodes.append(hl)
+        }
+    }
+
+    func clearSpecialBlastPreview() {
+        for n in specialPreviewNodes { n.removeFromParent() }
+        specialPreviewNodes.removeAll()
     }
 }

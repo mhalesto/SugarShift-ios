@@ -28,4 +28,16 @@ enum LevelSeed {
         let millis = UInt64(Date().timeIntervalSince1970 * 1_000)
         return make(level: level, attempt: Int(millis & 0xFFFF), salt: millis)
     }
+
+    /// Seed for the shared daily challenge board. Derived from the UTF-8 bytes
+    /// of the date key with FNV-1a so it is identical on every device — never
+    /// use `String.hashValue` here, it is randomized per process.
+    static func dailySeed(dateKey: String, level: Int) -> UInt64 {
+        var hash: UInt64 = 0xCBF29CE484222325
+        for byte in dateKey.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001B3
+        }
+        return make(level: level, attempt: 0, salt: hash)
+    }
 }

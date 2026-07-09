@@ -213,7 +213,7 @@ extension LevelMapScene {
 
     /// Launches the replayable Score Rush mode through the normal level path.
     func launchEndless() {
-        onLevelSelected?(Levels.endlessLevel)
+        onLevelSelected?(Levels.endlessLevel, nil)
     }
 
     func buildBottomBar() {

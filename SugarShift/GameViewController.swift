@@ -6,6 +6,9 @@ final class GameViewController: UIViewController {
     /// Level selected by the map. If nil, the scene falls back to persisted
     /// progression.
     var levelNumber: Int?
+    /// Non-nil only when the level was launched from the daily challenge card.
+    /// Capturing the full value keeps a run stable across local midnight.
+    var dailyChallenge: DailyChallenge?
 
     /// Called when the player taps "Choose level" on the end-of-level card.
     /// The host (LevelMapViewController) typically dismisses this VC to return
@@ -54,6 +57,7 @@ final class GameViewController: UIViewController {
 
         let scene = GameScene(size: skView.bounds.size)
         scene.initialLevel = levelNumber
+        scene.initialDailyChallenge = dailyChallenge
         scene.scaleMode = .resizeFill
         scene.backgroundColor = .clear
         scene.onChooseLevel = { [weak self] in self?.onChooseLevel?() }

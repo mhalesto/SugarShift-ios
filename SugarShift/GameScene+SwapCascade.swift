@@ -139,6 +139,7 @@ extension GameScene {
     func attemptSwap(_ a: Pos, _ b: Pos) {
         guard !isResolving, movesLeft > 0 else { return }
         isResolving = true
+        clearSpecialBlastPreview()
         cascadeDepth = 0
         chocolateDamagedThisTurn = false
         chainTilesCleared = 0
@@ -336,6 +337,19 @@ extension GameScene {
             addSquare(around: positions.1, radius: 2)
             banner = String(localized: "DOUBLE WRAP!")
             tint = UIColor(hex: "#FB923C")
+        } else if pair.contains(.fish) {
+            // Fish combo: release a school that seeks several goal/blocker tiles,
+            // each clearing a small splash around its target.
+            var seeded = affected
+            seeded.insert(positions.0); seeded.insert(positions.1)
+            for _ in 0..<4 {
+                guard let t = fishTarget(excluding: seeded) else { break }
+                seeded.insert(t)
+                add(t.r, t.c)
+                addSquare(around: t, radius: 1)
+            }
+            banner = String(localized: "FISH FRENZY!")
+            tint = UIColor(hex: "#22D3EE")
         } else {
             addSquare(around: center, radius: 1)
             banner = "SPECIAL COMBO!"
@@ -385,6 +399,30 @@ extension GameScene {
                            tint: UIColor(hex: "#FACC15"),
                            scorePerTile: 40,
                            center: point(forRow: pos.r, col: pos.c))
+    }
+
+    /// Picks a tile for a fish to seek: a blocker first, then an objective
+    /// colour tile, else any tile — never one already being cleared.
+    func fishTarget(excluding exclude: Set<Pos>) -> Pos? {
+        var blockers: [Pos] = []
+        var goalColorTiles: [Pos] = []
+        var others: [Pos] = []
+        var goalColor: String?
+        if case .collectColor(let index, _) = levelConfig.goal {
+            goalColor = palette[max(0, index) % max(1, palette.count)].lowercased()
+        }
+        for r in 0..<rows {
+            for c in 0..<cols {
+                let p = Pos(r: r, c: c)
+                guard let cell = grid[r][c], !exclude.contains(p) else { continue }
+                if cell.blocker != nil { blockers.append(p) }
+                else if let gc = goalColor, cell.color.lowercased() == gc { goalColorTiles.append(p) }
+                else { others.append(p) }
+            }
+        }
+        if let pick = blockers.randomElement(using: &gameplayRNG) { return pick }
+        if let pick = goalColorTiles.randomElement(using: &gameplayRNG) { return pick }
+        return others.randomElement(using: &gameplayRNG)
     }
 
     func resolveManualClear(_ matches: Set<Pos>,
@@ -467,7 +505,8 @@ extension GameScene {
 
     func resolveCascade() {
         let groups = Engine.findMatchGroups(grid)
-        guard !groups.isEmpty else {
+        let squares = Engine.findSquares(grid)
+        guard !(groups.isEmpty && squares.isEmpty) else {
             finishCascadeTurn()
             return
         }
@@ -483,9 +522,23 @@ extension GameScene {
                                                    matches,
                                                    bigger: specialBlastIsExpanded)
         matches = applySugarRushIfReady(to: matches, depth: depth)
+        // A 2x2 square clears like a match (and spawns a Fish below).
+        for sq in squares { for p in sq { matches.insert(p) } }
+        // Each activated fish also seeks a goal/blocker tile to clear.
+        for p in matches where grid[p.r][p.c]?.special == .fish {
+            if let target = fishTarget(excluding: matches) { matches.insert(target) }
+        }
 
-        let specialSpawn = Engine.specialSpawn(from: groups,
-                                               bombRunLength: levelConfig.bombSpawnRunLength)
+        // Fish from a square outranks a plain striped; otherwise use the run spawn.
+        var effectiveSpawn = Engine.specialSpawn(from: groups,
+                                                 bombRunLength: levelConfig.bombSpawnRunLength)
+        if let square = squares.first,
+           effectiveSpawn == nil
+            || effectiveSpawn?.special == .stripedRow
+            || effectiveSpawn?.special == .stripedCol {
+            effectiveSpawn = SpecialSpawn(position: square[0], special: .fish)
+        }
+        let specialSpawn = effectiveSpawn
         let specialSpawnColor = specialSpawn.flatMap { grid[$0.position.r][$0.position.c]?.color }
 
         let preClear = cellSnapshot(for: matches)
@@ -688,6 +741,7 @@ extension GameScene {
             return
         }
         grantComboFreeSpecialIfCharged()
+        dropMercySpecialIfStruggling()
         isResolving = false
         maybeShowComboNudge()
         checkLevelEnd()
@@ -710,6 +764,32 @@ extension GameScene {
                 }
             }
         }
+    }
+
+    /// Anti-frustration: when the player is low on moves, the objective isn't
+    /// done, and there's no special on the board to lean on, occasionally gift a
+    /// striped/wrapped so a tight finish stays winnable and exciting.
+    func dropMercySpecialIfStruggling() {
+        guard !levelEnded, !isLevelGoalComplete, (1...4).contains(movesLeft) else { return }
+        let hasSpecial = grid.contains { row in row.contains { $0?.special != nil } }
+        guard !hasSpecial else { return }
+        guard Int.random(in: 0..<100, using: &gameplayRNG) < 30 else { return }
+        var candidates: [Pos] = []
+        for r in 0..<rows {
+            for c in 0..<cols {
+                guard let cell = grid[r][c], cell.blocker == nil,
+                      cell.kind == .normal, cell.special == nil else { continue }
+                candidates.append(Pos(r: r, c: c))
+            }
+        }
+        guard let p = candidates.randomElement(using: &gameplayRNG) else { return }
+        grid[p.r][p.c]?.special = Bool.random(using: &gameplayRNG) ? .stripedRow : .wrapped
+        refreshNode(at: p)
+        nodes[p.r][p.c]?.run(.sequence([.scale(to: 1.2, duration: 0.12),
+                                        .scale(to: 1.0, duration: 0.14)]))
+        Effects.showComboBanner(text: String(localized: "LUCKY DROP!"),
+                                color: UIColor(hex: "#34D399"), in: self)
+        Effects.notify(.success)
     }
 
     /// Mechanical payoff for a max-tier cascade chain: plant a free special on the

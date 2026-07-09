@@ -20,6 +20,10 @@ final class GameCenterService {
         case totalScore  = "com.currenttech.SugarShift.lb.totalScore"
         case highestLevel = "com.currenttech.SugarShift.lb.highestLevel"
         case threeStarLevels = "com.currenttech.SugarShift.lb.threeStarLevels"
+        /// Configure this one in App Store Connect as a *recurring* leaderboard
+        /// that resets daily — everyone plays the identical seeded board, so
+        /// scores are directly comparable within a day.
+        case dailyScore = "com.currenttech.SugarShift.lb.dailyScore"
     }
 
     enum Achievement: String, CaseIterable {
@@ -94,6 +98,22 @@ final class GameCenterService {
 
     func submitThreeStarLevels(_ count: Int) {
         report(count, to: .threeStarLevels)
+    }
+
+    /// Score for today's shared daily board. The challenge number rides along
+    /// as the GameKit context so a score can be tied back to its puzzle.
+    func submitDailyScore(_ score: Int, challengeNumber: Int) {
+        guard isAuthenticated else { return }
+        GKLeaderboard.submitScore(score,
+                                  context: challengeNumber,
+                                  player: GKLocalPlayer.local,
+                                  leaderboardIDs: [Leaderboard.dailyScore.rawValue]) { error in
+            if let error {
+                Analytics.track("gamecenter_score_failed",
+                                properties: ["board": Leaderboard.dailyScore.rawValue,
+                                             "error": "\(error)"])
+            }
+        }
     }
 
     /// Updates achievement progress (0…100) and reports to Game Center.

@@ -60,6 +60,8 @@ struct SugarShiftTests {
         #expect(first.seed == second.seed)
         #expect(first.openingMoveScore == second.openingMoveScore)
         #expect(boardSignature(first.grid) == boardSignature(second.grid))
+        #expect(Engine.findMatches(first.grid).isEmpty)
+        #expect(Engine.findSquares(first.grid).isEmpty)
         #expect(Engine.hasAnyMoves(first.grid))
     }
 
@@ -289,12 +291,17 @@ struct SugarShiftTests {
     }
 
 
-    @Test func earlyLevelStarsAreMoreForgiving() {
+    @Test func earlyLevelTargetsStayRewardingWithoutHiddenMoveGates() {
         let level1 = Levels.config(for: 1)
         #expect(level1.moves > 20)
-        #expect(level1.target < 800)
+        #expect(level1.target >= 1_000)
+        #expect(level1.target <= 1_300)
         #expect(level1.starThresholds.two == Int((Double(level1.target) * 1.10).rounded()))
         #expect(level1.starThresholds.three == Int((Double(level1.target) * 1.25).rounded()))
+
+        let level2 = Levels.config(for: 2)
+        #expect(level2.target >= 1_600)
+        #expect(level2.target <= 1_900)
 
         let level20 = Levels.config(for: 20)
         #expect(level20.moves >= 34)
@@ -306,7 +313,8 @@ struct SugarShiftTests {
         let level10 = Levels.config(for: 10)
         #expect(level10.moves >= 30)
         #expect(level10.colors <= 5)
-        #expect(level10.target <= 3200)
+        #expect(level10.target >= 4_800)
+        #expect(level10.target <= 5_500)
     }
 
     @Test func firstTwentyFiveLevelsEstimateAsFairOrBetter() {
@@ -974,6 +982,157 @@ struct SugarShiftTests {
         // baseline).
         #expect(syrupLevels > 0)
         #expect(syrupLevels < Levels.count / 8)
+    }
+
+    @Test func dailyChallengeIsSharedAndDeterministic() {
+        // Same instant → same key, number, level, and seed. Different days →
+        // different boards. The seed must not depend on process-randomized
+        // hashing or the user's calendar.
+        let noon = Date(timeIntervalSince1970: 1_780_000_000)
+        let a = Levels.dailyChallenge(on: noon)
+        let b = Levels.dailyChallenge(on: noon.addingTimeInterval(3_600))
+        #expect(a.dateKey == b.dateKey)
+        #expect(a.seed == b.seed)
+        #expect(a.number == b.number)
+        #expect(a.level == b.level)
+
+        let nextDay = Levels.dailyChallenge(on: noon.addingTimeInterval(86_400 * 2))
+        #expect(nextDay.seed != a.seed)
+        #expect(nextDay.number > a.number)
+
+        #expect(LevelSeed.dailySeed(dateKey: "2026-06-11", level: 42)
+             == LevelSeed.dailySeed(dateKey: "2026-06-11", level: 42))
+        #expect(LevelSeed.dailySeed(dateKey: "2026-06-11", level: 42)
+             != LevelSeed.dailySeed(dateKey: "2026-06-12", level: 42))
+
+        // The full board build pipeline must reproduce identical grids from
+        // the daily seed — this is the "everyone plays the same board" promise.
+        let config = Levels.config(for: a.level)
+        let first = LevelBoardFactory.makeInitialBoard(config: config, seed: a.seed)
+        let second = LevelBoardFactory.makeInitialBoard(config: config, seed: a.seed)
+        #expect(first.seed == second.seed)
+        #expect(DailyShare.emojiGrid(for: first.grid) == DailyShare.emojiGrid(for: second.grid))
+        #expect(!DailyShare.emojiGrid(for: first.grid).isEmpty)
+    }
+
+    @Test func dailyShareTextContainsResultAndBoard() {
+        let challenge = Levels.dailyChallenge(on: Date(timeIntervalSince1970: 1_780_000_000))
+        let config = Levels.config(for: challenge.level)
+        let board = LevelBoardFactory.makeInitialBoard(config: config, seed: challenge.seed)
+        let text = DailyShare.shareText(challenge: challenge,
+                                        stars: 3,
+                                        score: 12_345,
+                                        movesToSpare: 4,
+                                        startGrid: board.grid)
+        #expect(text.contains("#\(challenge.number)"))
+        #expect(text.contains("⭐⭐⭐"))
+        #expect(text.contains(DailyShare.emojiGrid(for: board.grid)))
+    }
+
+    @Test func squareMatchesDetectAndFormFish() {
+        func cell(_ color: String) -> Cell {
+            Cell(id: color + "-\(Int.random(in: 0..<999999))", color: color, special: nil, kind: .normal)
+        }
+        // A 2x2 same-colour block in the top-left, nothing else uniform.
+        let grid: Grid = [
+            [cell("R"), cell("R"), cell("B")],
+            [cell("R"), cell("R"), cell("G")],
+            [cell("Y"), cell("B"), cell("G")]
+        ]
+        #expect(Engine.findSquares(grid).count == 1)
+        #expect(Engine.createsSquare(grid, at: Pos(r: 0, c: 0)))
+        #expect(!Engine.createsSquare(grid, at: Pos(r: 2, c: 2)))
+
+        // A swap that forms a 2x2 (no 3-line) must count as a valid move.
+        let g2: Grid = [
+            [cell("R"), cell("R"), cell("B")],
+            [cell("R"), cell("B"), cell("R")],
+            [cell("Y"), cell("G"), cell("P")]
+        ]
+        let result = Engine.swapIfValid(g2, Pos(r: 1, c: 1), Pos(r: 1, c: 2))
+        #expect(result.didSwap)
+
+        // An unchanged square is not a legal move. This protects against stale
+        // pre-matches accepting a swap of two identical cells.
+        let unchanged = Engine.swapIfValid(grid, Pos(r: 0, c: 0), Pos(r: 0, c: 1))
+        #expect(!unchanged.didSwap)
+    }
+
+    @Test func simulationResolvesSquareMatchesAndCreatesFish() {
+        func cell(_ id: String, _ color: String) -> Cell {
+            Cell(id: id, color: color, special: nil, kind: .normal)
+        }
+        var grid: Grid = [
+            [cell("a", "R"), cell("b", "R"), cell("c", "B")],
+            [cell("d", "R"), cell("e", "R"), cell("f", "G")],
+            [cell("g", "Y"), cell("h", "B"), cell("i", "P")]
+        ]
+        var rng = SeededRandomNumberGenerator(seed: 42)
+        var score = 0
+        var collectedGoalTiles = 0
+        var createdSpecials = 0
+        var detonatedBombs = 0
+        var collectedIngredients = 0
+        var collectedKeys = 0
+        var openedChests = 0
+
+        let depth = LevelSimulationBot.resolveCascades(
+            config: Levels.config(for: 1),
+            grid: &grid,
+            rng: &rng,
+            score: &score,
+            collectedGoalTiles: &collectedGoalTiles,
+            createdSpecials: &createdSpecials,
+            detonatedBombs: &detonatedBombs,
+            collectedIngredients: &collectedIngredients,
+            collectedKeys: &collectedKeys,
+            openedChests: &openedChests
+        )
+
+        #expect(depth >= 1)
+        #expect(score > 0)
+        #expect(createdSpecials >= 1)
+    }
+
+    @Test func widgetLifeScheduleAdvancesUntilFull() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let firstLife = now.addingTimeInterval(60)
+        let snapshot = WidgetSharedState.Snapshot(dateKey: "2033-05-18",
+                                                  number: 1,
+                                                  level: 1,
+                                                  claimed: false,
+                                                  streak: 0,
+                                                  lives: 2,
+                                                  livesMax: 5,
+                                                  nextLifeAt: firstLife,
+                                                  regenSeconds: 60)
+
+        let dates = snapshot.regenerationDates(after: now,
+                                               before: now.addingTimeInterval(600))
+        #expect(dates == [
+            firstLife,
+            firstLife.addingTimeInterval(60),
+            firstLife.addingTimeInterval(120)
+        ])
+        #expect(snapshot.livesNow(at: dates[0]) == 3)
+        #expect(snapshot.livesNow(at: dates[2]) == 5)
+    }
+
+    @Test func liveActivityStateMaterializesRegeneratedLives() {
+        guard #available(iOS 16.1, *) else { return }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let firstLife = now.addingTimeInterval(60)
+        let state = LifeRegenAttributes.ContentState(lives: 2,
+                                                     nextLifeAt: firstLife,
+                                                     fullAt: firstLife.addingTimeInterval(120),
+                                                     regenSeconds: 60)
+
+        #expect(state.lives(at: now, maximum: 5) == 2)
+        #expect(state.lives(at: firstLife, maximum: 5) == 3)
+        #expect(state.lives(at: firstLife.addingTimeInterval(120), maximum: 5) == 5)
+        #expect(state.nextLife(after: firstLife, maximum: 5)
+                == firstLife.addingTimeInterval(60))
+        #expect(state.nextLife(after: firstLife.addingTimeInterval(120), maximum: 5) == nil)
     }
 
 }

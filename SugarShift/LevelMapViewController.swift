@@ -33,7 +33,9 @@ final class LevelMapViewController: UIViewController {
         let scene = LevelMapScene(size: sk.bounds.size)
         scene.scaleMode = .resizeFill
         scene.backgroundColor = .clear
-        scene.onLevelSelected = { [weak self] lvl in self?.startLevel(lvl) }
+        scene.onLevelSelected = { [weak self] level, daily in
+            self?.startLevel(level, dailyChallenge: daily)
+        }
         scene.onSettings      = { [weak self] in self?.showSettingsAlert() }
         scene.onShop          = { [weak self] in self?.showShopAlert() }
         sk.presentScene(scene)
@@ -85,9 +87,10 @@ final class LevelMapViewController: UIViewController {
 
     // MARK: - Navigation
 
-    private func startLevel(_ n: Int) {
+    private func startLevel(_ n: Int, dailyChallenge: DailyChallenge?) {
         let game = GameViewController()
         game.levelNumber = n
+        game.dailyChallenge = dailyChallenge
         game.modalTransitionStyle = .crossDissolve
         game.modalPresentationStyle = .fullScreen
         game.onChooseLevel = { [weak self] in

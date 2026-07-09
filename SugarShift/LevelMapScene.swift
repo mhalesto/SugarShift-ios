@@ -10,7 +10,7 @@ import UIKit
 final class LevelMapScene: SKScene {
 
     // Callbacks owned by the host VC
-    var onLevelSelected: ((Int) -> Void)?
+    var onLevelSelected: ((Int, DailyChallenge?) -> Void)?
     var onSettings:      (() -> Void)?
     var onShop:          (() -> Void)?
 
@@ -83,6 +83,7 @@ final class LevelMapScene: SKScene {
     var eventBannerNode: SKNode?
     var dailyStreakNode: SKNode?
     var previewLevel: Int?
+    var previewDailyChallenge: DailyChallenge?
     var nextHUDRefreshAt: TimeInterval = 0
 
     var levelPositions: [Int: CGPoint] = [:]

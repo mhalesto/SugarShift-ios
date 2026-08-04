@@ -9,12 +9,10 @@ import XCTest
 /// test report, or from the command line with:
 ///   xcrun xcresulttool get --legacy --path <…>.xcresult --format json
 ///
-/// Caveat: the bot is greedy (no multi-move planning or special-saving), so its
-/// win rate UNDERESTIMATES human skill — treat it as a relative signal, strongest
-/// on score-goal levels. Levels where the bot scores 0% are mostly objective
-/// levels (clear-blockers/collect), which it cannot pursue optimally; that is a
-/// bot limitation, not proof the level is unfair. Use it to spot relative spikes,
-/// then confirm with human playtests before retuning.
+/// Caveat: the bot now ranks immediate moves against the real objective and
+/// urgent hazards, but it remains greedy: no multi-move setup, special-saving,
+/// risk judgement, or long-horizon ingredient routing. Treat win rate as a
+/// relative build-to-build signal, not a substitute for human playtests.
 final class BalanceReportTests: XCTestCase {
     func testCampaignBalanceReport() {
         let rows = LevelDesignReport.simulationRows(levelRange: 1...Levels.count,
@@ -42,7 +40,7 @@ final class BalanceReportTests: XCTestCase {
         lines.append("HARD_SPIKES (<40%): \(hardSpikes)")
         lines.append("TRIVIAL (>98%, >2.8*): \(trivial)")
         lines.append("STUCK_PRONE (>15%): \(stuck)")
-        lines.append("BOT_BROKEN (0%, mostly objective levels): \(broken)")
+        lines.append("BOT_BLIND_SPOTS (0%, usually routing-heavy): \(broken)")
 
         let attachment = XCTAttachment(string: lines.joined(separator: "\n"))
         attachment.name = "balance-report.txt"

@@ -427,6 +427,10 @@ final class SettingsCard: SKNode {
         fitLabel(buttonLabel, maxWidth: buttonW - 14, minFontSize: 9)
         button.addChild(buttonLabel)
 
+        row.isAccessibilityElement = true
+        row.accessibilityLabel = "\(title). \(subtitle)"
+        row.accessibilityTraits = .button
+
         actionRows.append((key, row, enabled))
     }
 
@@ -476,6 +480,11 @@ final class SettingsCard: SKNode {
         knob.position = CGPoint(x: initialOn ? pillW / 2 - 14 : -pillW / 2 + 14, y: 0)
         pill.addChild(knob)
 
+        row.isAccessibilityElement = true
+        row.accessibilityLabel = title
+        row.accessibilityValue = initialOn ? String(localized: "On") : String(localized: "Off")
+        row.accessibilityTraits = .button
+
         rows.append((key, row, pill, knob, initialOn))
     }
 
@@ -514,6 +523,10 @@ final class SettingsCard: SKNode {
         label.name = name
         fitLabel(label, maxWidth: size.width - 42, minFontSize: 10)
         btn.addChild(label)
+
+        btn.isAccessibilityElement = true
+        btn.accessibilityLabel = title
+        btn.accessibilityTraits = .button
     }
 
     private func fitLabel(_ label: SKLabelNode, maxWidth: CGFloat, minFontSize: CGFloat) {
@@ -805,6 +818,9 @@ final class SettingsCard: SKNode {
         let pillW: CGFloat = 50
         let targetX: CGFloat = newValue ? pillW / 2 - 14 : -pillW / 2 + 14
         knob.run(.move(to: CGPoint(x: targetX, y: 0), duration: 0.14))
+        rows[idx].row.accessibilityValue = newValue
+            ? String(localized: "On")
+            : String(localized: "Off")
 
         // Persist + react
         switch key {

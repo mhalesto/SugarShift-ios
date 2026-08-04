@@ -98,29 +98,39 @@ extension GameScene {
     }
 
     func applySugarRushIfReady(to matches: Set<Pos>, depth: Int) -> Set<Pos> {
-        guard depth == 1, sugarRushCharged, let anchor = matches.first else { return matches }
+        guard depth == 1, sugarRushCharged else { return matches }
+        let resolution = Engine.sugarRushResolution(in: grid,
+                                                    base: matches,
+                                                    preferredAnchor: turnPrimaryAnchor)
+        guard let anchor = resolution.anchor else { return matches }
         sugarRushCharged = false
-        var boosted = matches
-        for c in 0..<cols where grid[anchor.r][c] != nil {
-            boosted.insert(Pos(r: anchor.r, c: c))
-        }
-        for r in 0..<rows where grid[r][anchor.c] != nil {
-            boosted.insert(Pos(r: r, c: anchor.c))
-        }
         cash += 15
         let center = point(forRow: anchor.r, col: anchor.c)
         Effects.showComboBanner(text: String(localized: "SUGAR RUSH!"), color: UIColor(hex: "#EC4899"), in: self)
         Effects.showScorePopup(15, at: CGPoint(x: center.x, y: center.y + tileSize * 0.5), in: self, color: UIColor(hex: "#FACC15"))
         Analytics.track("sugar_rush_used", properties: ["level": "\(levelNumber)"])
-        return boosted
+        updateComboMeter()
+        return resolution.positions
     }
 
     func chargeSugarRushIfNeeded(depth: Int) {
-        guard depth >= 3, !sugarRushCharged else { return }
+        guard depth >= 3 else { return }
+        chargeSugarRush(source: "cascade", depth: depth)
+    }
+
+    func chargeSugarRush(source: String, depth: Int? = nil) {
+        guard !sugarRushCharged else { return }
         sugarRushCharged = true
         Effects.showComboBanner(text: String(localized: "SUGAR RUSH READY"), color: UIColor(hex: "#EC4899"), in: self)
-        Analytics.track("sugar_rush_charged", properties: ["level": "\(levelNumber)",
-                                                           "depth": "\(depth)"])
+        Audio.shared.play(.colorCharge)
+        Effects.haptic(.medium, intensity: 0.72)
+        updateComboMeter()
+        Analytics.track("sugar_rush_charged", properties: [
+            "level": "\(levelNumber)",
+            "source": source,
+            "depth": "\(depth ?? 0)",
+            "flow": "\(flowLevel)"
+        ])
     }
 
     func scoreForClear(preClear: [Pos: Cell],
@@ -136,6 +146,35 @@ extension GameScene {
         return base + bananaBonus
     }
 
+    func objectiveImpact(preClear: [Pos: Cell], clearResult: ClearResult) -> Int {
+        switch levelConfig.goal {
+        case .clearBlockers:
+            return clearResult.damagedBlockers.count
+        case .collectColor(let index, _):
+            let target = palette[max(0, index) % max(1, palette.count)].lowercased()
+            return clearResult.cleared.filter {
+                preClear[$0]?.color.lowercased() == target
+            }.count
+        case .openChests:
+            return clearResult.damagedBlockers.filter {
+                preClear[$0]?.blocker?.type == .chest
+            }.count
+        case .detonateBombs:
+            return preClear.values.filter { $0.special == .bomb }.count
+        case .collectIngredients, .collectKeys, .collectIngredientsAndKeys:
+            let columns: [Int] = grid.flatMap { row in
+                row.enumerated().compactMap { column, cell in
+                    guard let cell, cell.kind != .normal else { return nil }
+                    return column
+                }
+            }
+            let dropColumns = Set(columns)
+            return clearResult.cleared.filter { dropColumns.contains($0.c) }.count
+        case .score, .createSpecials:
+            return 0
+        }
+    }
+
     func attemptSwap(_ a: Pos, _ b: Pos) {
         guard !isResolving, movesLeft > 0 else { return }
         isResolving = true
@@ -145,8 +184,13 @@ extension GameScene {
         chainTilesCleared = 0
         chainSpecialsTriggered = 0
         chainBlockersDamaged = 0
-        lastChainTierFired = 0
-        sugarRushCharged = false
+        chainObjectiveHits = 0
+        turnCreatedSpecials = 0
+        turnIntent = .match
+        turnScoreAtStart = score
+        turnPrimaryAnchor = nil
+        turnConsumesMove = false
+        bossDamageAppliedThisTurn = false
         updateComboMeter()
 
         let result = Engine.swapIfValid(grid, a, b)
@@ -157,6 +201,8 @@ extension GameScene {
             colorBombActivation(a, b) != nil
         if willCommitMove {
             takeUndoSnapshot()
+            turnScoreAtStart = score
+            turnPrimaryAnchor = b
         }
         let nodeA = nodes[a.r][a.c]
         let nodeB = nodes[b.r][b.c]
@@ -165,6 +211,9 @@ extension GameScene {
         let dur: TimeInterval = 0.15
 
         if let combo = specialComboActivation(a, b) {
+            turnIntent = .specialCombo
+            preferredSpecialSpawnPositions.removeAll()
+            turnConsumesMove = true
             grid = combo.swappedGrid
             nodes[a.r][a.c] = nodeB
             nodes[b.r][b.c] = nodeA
@@ -172,9 +221,10 @@ extension GameScene {
             Analytics.track("special_combo_used",
                             properties: ["level": "\(levelNumber)",
                                          "first": combo.first.rawValue,
-                                         "second": combo.second.rawValue])
-            Effects.haptic(.heavy)
-            Audio.shared.play(.bomb)
+                                         "second": combo.second.rawValue,
+                                         "kind": Engine.specialComboKind(combo.first, combo.second)?.rawValue ?? "unknown"])
+            Effects.haptic(.medium, intensity: 0.72)
+            Audio.shared.play(.swapClick, pan: soundPan(at: posB))
             nodeA?.run(.move(to: posB, duration: dur))
             nodeB?.run(.move(to: posA, duration: dur)) { [weak self] in
                 self?.detonateSpecialCombo(first: combo.first,
@@ -183,6 +233,9 @@ extension GameScene {
                                            targetColor: combo.targetColor)
             }
         } else if let colorBomb = colorBombActivation(a, b) {
+            turnIntent = .special
+            preferredSpecialSpawnPositions.removeAll()
+            turnConsumesMove = true
             grid = colorBomb.swappedGrid
             nodes[a.r][a.c] = nodeB
             nodes[b.r][b.c] = nodeA
@@ -196,6 +249,9 @@ extension GameScene {
                                         targetColor: colorBomb.targetColor)
             }
         } else if result.didSwap {
+            turnIntent = .match
+            preferredSpecialSpawnPositions = [b, a]
+            turnConsumesMove = true
             grid = result.grid
             nodes[a.r][a.c] = nodeB
             nodes[b.r][b.c] = nodeA
@@ -207,6 +263,8 @@ extension GameScene {
                 self?.resolveCascade()
             }
         } else {
+            preferredSpecialSpawnPositions.removeAll()
+            turnConsumesMove = false
             Effects.haptic(.soft)
             Audio.shared.play(.swapInvalid)
             nodeA?.run(.sequence([.move(to: posB, duration: dur), .move(to: posA, duration: dur)]))
@@ -222,165 +280,51 @@ extension GameScene {
                                                       second: Special,
                                                       targetColor: String?,
                                                       center: Pos)? {
-        guard let cellA = grid[a.r][a.c],
-              let cellB = grid[b.r][b.c],
-              let specialA = cellA.special,
-              let specialB = cellB.special else { return nil }
-
-        var swapped = grid
-        swapped[a.r][a.c] = cellB
-        swapped[b.r][b.c] = cellA
-
-        let targetColor: String?
-        if specialA == .colorBomb {
-            targetColor = cellB.color
-        } else if specialB == .colorBomb {
-            targetColor = cellA.color
-        } else {
-            targetColor = nil
+        guard let swap = Engine.classifySwap(grid, a, b),
+              case .specialCombo(_, let first, let second, let targetColor) = swap.activation else {
+            return nil
         }
-
-        return (swapped, specialA, specialB, targetColor, b)
+        return (swap.grid, first, second, targetColor, b)
     }
 
     func detonateSpecialCombo(first: Special,
                                       second: Special,
                                       positions: (Pos, Pos),
                                       targetColor: String?) {
-        let pair = Set([first, second])
-        var affected = Set<Pos>()
-        let center = positions.1
-
-        func add(_ r: Int, _ c: Int) {
-            if r >= 0, r < rows, c >= 0, c < cols, grid[r][c] != nil {
-                affected.insert(Pos(r: r, c: c))
-            }
+        guard let kind = Engine.specialComboKind(first, second) else {
+            isResolving = false
+            return
         }
-
-        func addRow(_ r: Int) {
-            for c in 0..<cols { add(r, c) }
-        }
-
-        func addCol(_ c: Int) {
-            for r in 0..<rows { add(r, c) }
-        }
-
-        func addSquare(around p: Pos, radius: Int) {
-            for dr in -radius...radius {
-                for dc in -radius...radius {
-                    add(p.r + dr, p.c + dc)
-                }
-            }
-        }
-
-        func matchingColorPositions(_ color: String?) -> [Pos] {
-            guard let color else { return [] }
-            var out: [Pos] = []
-            for r in 0..<rows {
-                for c in 0..<cols where grid[r][c]?.color == color {
-                    out.append(Pos(r: r, c: c))
-                }
-            }
-            return out
-        }
-
-        let banner: String
-        let tint: UIColor
-
-        if first == .colorBomb && second == .colorBomb {
-            // Two color bombs together wipe the whole board — the signature
-            // "clear everything" move players expect from match-3.
-            for r in 0..<rows { for c in 0..<cols { add(r, c) } }
-            banner = String(localized: "BOARD CLEAR!")
-            tint = UIColor(hex: "#F472B6")
-        } else if pair == Set([.stripedRow, .stripedCol]) ||
-            (first.rawValue.hasPrefix("striped") && second.rawValue.hasPrefix("striped")) {
-            addRow(positions.0.r)
-            addCol(positions.1.c)
-            addRow(positions.1.r)
-            addCol(positions.0.c)
-            banner = "DOUBLE STRIPE!"
-            tint = UIColor(hex: "#60A5FA")
-        } else if (first == .wrapped && (second == .stripedRow || second == .stripedCol)) ||
-                    (second == .wrapped && (first == .stripedRow || first == .stripedCol)) {
-            for offset in -1...1 {
-                addRow(center.r + offset)
-                addCol(center.c + offset)
-            }
-            banner = "WRAPPED STRIPE!"
-            tint = UIColor(hex: "#F97316")
-        } else if pair.contains(.colorBomb), pair.contains(.stripedRow) || pair.contains(.stripedCol) {
-            for (index, p) in matchingColorPositions(targetColor).enumerated() {
-                index.isMultiple(of: 2) ? addRow(p.r) : addCol(p.c)
-            }
-            banner = "RAINBOW STRIPES!"
-            tint = UIColor(hex: "#A78BFA")
-        } else if pair.contains(.colorBomb), pair.contains(.wrapped) {
-            for p in matchingColorPositions(targetColor) {
-                addSquare(around: p, radius: 1)
-            }
-            banner = "RAINBOW WRAP!"
-            tint = UIColor(hex: "#F472B6")
-        } else if pair.contains(.colorBomb), pair.contains(.bomb) {
-            for p in matchingColorPositions(targetColor) {
-                addSquare(around: p, radius: 1)
-            }
-            banner = "RAINBOW BOOM!"
-            tint = UIColor(hex: "#FACC15")
-        } else if first == .bomb && second == .bomb {
-            addSquare(around: center, radius: 2)
-            banner = "MEGA BOOM!"
-            tint = UIColor(hex: "#EF4444")
-        } else if first == .wrapped && second == .wrapped {
-            // Two wrapped candies detonate as a pair of large blasts.
-            addSquare(around: positions.0, radius: 2)
-            addSquare(around: positions.1, radius: 2)
-            banner = String(localized: "DOUBLE WRAP!")
-            tint = UIColor(hex: "#FB923C")
-        } else if pair.contains(.fish) {
-            // Fish combo: release a school that seeks several goal/blocker tiles,
-            // each clearing a small splash around its target.
-            var seeded = affected
-            seeded.insert(positions.0); seeded.insert(positions.1)
-            for _ in 0..<4 {
-                guard let t = fishTarget(excluding: seeded) else { break }
-                seeded.insert(t)
-                add(t.r, t.c)
-                addSquare(around: t, radius: 1)
-            }
-            banner = String(localized: "FISH FRENZY!")
-            tint = UIColor(hex: "#22D3EE")
-        } else {
-            addSquare(around: center, radius: 1)
-            banner = "SPECIAL COMBO!"
-            tint = UIColor(hex: "#10B981")
-        }
-
-        affected.insert(positions.0)
-        affected.insert(positions.1)
-        affected = Engine.expandMatchesWithSpecials(grid,
-                                                    affected,
-                                                    bigger: specialBlastIsExpanded)
+        let affected = specialComboAffectedPositions(kind: kind,
+                                                     first: first,
+                                                     second: second,
+                                                     positions: positions,
+                                                     targetColor: targetColor)
+        let presentation = specialComboPresentation(for: kind)
+        let plan = presentationPlan(kind: kind,
+                                    first: first,
+                                    second: second,
+                                    positions: positions,
+                                    targetColor: targetColor)
+        recordSpecialComboForContract(kind: kind)
+        Analytics.track("special_combo_resolved",
+                        properties: ["level": "\(levelNumber)",
+                                     "kind": kind.rawValue,
+                                     "affected": "\(affected.count)",
+                                     "boss_shield": "\(bossShieldRemaining)",
+                                     "smash_charge": "\(smashCharge)"])
         resolveManualClear(affected,
-                           banner: banner,
-                           tint: tint,
+                           banner: presentation.0,
+                           tint: presentation.1,
                            scorePerTile: 70,
-                           center: point(forRow: center.r, col: center.c))
+                           center: point(forRow: positions.1.r, col: positions.1.c),
+                           presentation: plan)
     }
 
     func colorBombActivation(_ a: Pos, _ b: Pos) -> (swappedGrid: Grid, bombPosition: Pos, targetColor: String)? {
-        guard let cellA = grid[a.r][a.c], let cellB = grid[b.r][b.c] else { return nil }
-        guard cellA.special == .colorBomb || cellB.special == .colorBomb else { return nil }
-
-        var swapped = grid
-        swapped[a.r][a.c] = cellB
-        swapped[b.r][b.c] = cellA
-
-        if cellA.special == .colorBomb {
-            return (swapped, b, cellB.color)
-        } else {
-            return (swapped, a, cellA.color)
-        }
+        guard let swap = Engine.classifySwap(grid, a, b),
+              case .colorBomb(let position, let targetColor) = swap.activation else { return nil }
+        return (swap.grid, position, targetColor)
     }
 
     func detonateColorBomb(at pos: Pos, targetColor: String) {
@@ -393,55 +337,60 @@ extension GameScene {
         }
         matches = Engine.expandMatchesWithSpecials(grid,
                                                    matches,
-                                                   bigger: specialBlastIsExpanded)
+                                                   bigger: specialBlastIsExpanded,
+                                                   excludingSpecialsAt: [pos])
+        let colorTargets = matches.sorted {
+            if $0.r != $1.r { return $0.r < $1.r }
+            return $0.c < $1.c
+        }
+        let plan = ClearPresentationPlan(kind: .colorBomb,
+                                         origin: pos,
+                                         secondary: nil,
+                                         firstSpecial: .colorBomb,
+                                         secondSpecial: nil,
+                                         fishTargets: [],
+                                         colorTargets: colorTargets)
         resolveManualClear(matches,
                            banner: "COLOR BLAST!",
                            tint: UIColor(hex: "#FACC15"),
                            scorePerTile: 40,
-                           center: point(forRow: pos.r, col: pos.c))
-    }
-
-    /// Picks a tile for a fish to seek: a blocker first, then an objective
-    /// colour tile, else any tile — never one already being cleared.
-    func fishTarget(excluding exclude: Set<Pos>) -> Pos? {
-        var blockers: [Pos] = []
-        var goalColorTiles: [Pos] = []
-        var others: [Pos] = []
-        var goalColor: String?
-        if case .collectColor(let index, _) = levelConfig.goal {
-            goalColor = palette[max(0, index) % max(1, palette.count)].lowercased()
-        }
-        for r in 0..<rows {
-            for c in 0..<cols {
-                let p = Pos(r: r, c: c)
-                guard let cell = grid[r][c], !exclude.contains(p) else { continue }
-                if cell.blocker != nil { blockers.append(p) }
-                else if let gc = goalColor, cell.color.lowercased() == gc { goalColorTiles.append(p) }
-                else { others.append(p) }
-            }
-        }
-        if let pick = blockers.randomElement(using: &gameplayRNG) { return pick }
-        if let pick = goalColorTiles.randomElement(using: &gameplayRNG) { return pick }
-        return others.randomElement(using: &gameplayRNG)
+                           center: point(forRow: pos.r, col: pos.c),
+                           presentation: plan)
     }
 
     func resolveManualClear(_ matches: Set<Pos>,
                                     banner: String,
                                     tint: UIColor,
                                     scorePerTile: Int,
-                                    center: CGPoint) {
-        let preClear = cellSnapshot(for: matches)
-        let triggeredBombs = triggeredBombCount(in: matches)
+                                    center: CGPoint,
+                                    presentation: ClearPresentationPlan? = nil) {
+        let resolvedMatches = turnConsumesMove
+            ? applySugarRushIfReady(to: matches, depth: 1)
+            : matches
+        let preClear = cellSnapshot(for: resolvedMatches)
+        let triggeredBombs = triggeredBombCount(in: resolvedMatches)
         let specialsInChain = preClear.values.reduce(into: 0) { $0 += ($1.special != nil ? 1 : 0) }
-        let clearResult = Engine.clearMatches(&grid, matches: matches)
+        let clearResult = Engine.clearMatches(&grid, matches: resolvedMatches)
         let affected = max(1, clearResult.affectedCount)
         totalCascadeClears += affected
         if affected >= 8 {
             maxCascadeDepth = max(maxCascadeDepth, 2)
         }
+        let chargeMultiplier: Double
+        switch presentation?.kind {
+        case .some(.combo):       chargeMultiplier = 1.30
+        case .some(.colorBomb):   chargeMultiplier = 1.18
+        // Spending Smash must not immediately manufacture more Smash meter.
+        // Any unspent charge now comes from deliberately choosing a lower tier.
+        case .some(.playerSmash): chargeMultiplier = 0
+        case .none:               chargeMultiplier = 1.0
+        }
         recordChainProgress(tilesCleared: clearResult.cleared.count,
                             blockersDamaged: clearResult.damagedBlockers.count,
-                            specialsTriggered: specialsInChain)
+                            specialsTriggered: specialsInChain,
+                            chargeMultiplier: chargeMultiplier,
+                            objectiveHits: objectiveImpact(preClear: preClear,
+                                                           clearResult: clearResult))
         recordGoalProgress(preClear: preClear,
                            cleared: clearResult.cleared,
                            damaged: clearResult.damagedBlockers,
@@ -449,16 +398,37 @@ extension GameScene {
         _ = openChestsAfterClear(preClear: preClear,
                                   clearResult: clearResult)
 
+        if let presentation {
+            playClearPresentation(presentation, tint: tint)
+        }
+        Audio.shared.play(.fruitBreak, pan: soundPan(at: center))
+
         for p in clearResult.cleared {
             guard let n = nodes[p.r][p.c] else { continue }
+            let impactDelay = presentation?.delay(for: p) ?? 0
             let burstTint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
-            let burst = Effects.makeTileBurst(tint: burstTint)
-            burst.position = n.position
-            worldNode.addChild(burst)
-            burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
+            let impactPosition = n.position
+            let fruitTexture = (n.childNode(withName: "emoji") as? SKSpriteNode)?.texture
             n.run(.sequence([
-                .group([.scale(to: 1.5, duration: 0.12),
-                        .fadeOut(withDuration: 0.18)]),
+                .wait(forDuration: impactDelay),
+                .group([.scaleX(to: 1.07, duration: 0.035),
+                        .scaleY(to: 0.90, duration: 0.035)]),
+                .run { [weak self] in
+                    guard let self else { return }
+                    let burst = Effects.makeTileBurst(tint: burstTint)
+                    burst.position = impactPosition
+                    self.worldNode.addChild(burst)
+                    burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
+                    let fragments = Effects.makeFruitFragmentBurst(
+                        texture: fruitTexture,
+                        tint: burstTint,
+                        count: presentation?.isMajor == true ? 6 : 4,
+                        size: presentation?.isMajor == true ? 18 : 15)
+                    fragments.position = impactPosition
+                    self.worldNode.addChild(fragments)
+                },
+                .group([.scale(to: 1.38, duration: 0.11),
+                        .fadeOut(withDuration: 0.14)]),
                 .removeFromParent()
             ]))
             nodes[p.r][p.c] = nil
@@ -466,25 +436,34 @@ extension GameScene {
 
         for p in clearResult.damagedBlockers {
             guard let n = nodes[p.r][p.c] else { continue }
-            if let type = preClear[p]?.blocker?.type {
-                showMechanicImpact(type, at: n.position)
-            }
-            let flash = Effects.makeImpactFlash(at: n.position, big: false)
-            worldNode.addChild(flash)
+            let impactDelay = presentation?.delay(for: p) ?? 0
+            let impactPosition = n.position
+            let blockerType = preClear[p]?.blocker?.type
             let tint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
-            let chunks = Effects.makeChunkBurst(tint: tint, count: 5, size: 13)
-            chunks.position = n.position
-            chunks.zPosition = 735
-            worldNode.addChild(chunks)
             n.run(.sequence([
+                .wait(forDuration: impactDelay),
+                .run { [weak self] in
+                    guard let self else { return }
+                    if let blockerType {
+                        self.showMechanicImpact(blockerType, at: impactPosition)
+                    }
+                    let flash = Effects.makeImpactFlash(at: impactPosition, big: false)
+                    self.worldNode.addChild(flash)
+                    let chunks = Effects.makeChunkBurst(tint: tint, count: 5, size: 13)
+                    chunks.position = impactPosition
+                    chunks.zPosition = 735
+                    self.worldNode.addChild(chunks)
+                },
                 .scale(to: 1.08, duration: 0.06),
                 .scale(to: 1.0, duration: 0.10),
                 .run { [weak self] in self?.refreshNode(at: p) }
             ]))
         }
 
-        let flash = Effects.makeImpactFlash(at: center, big: true)
-        worldNode.addChild(flash)
+        if presentation == nil {
+            let flash = Effects.makeImpactFlash(at: center, big: true)
+            worldNode.addChild(flash)
+        }
         Effects.showComboBanner(text: banner, color: tint, in: self)
         let comboPoints = scoreForClear(preClear: preClear,
                                         clearResult: clearResult,
@@ -497,8 +476,11 @@ extension GameScene {
         score += comboPoints
         feedPiggyBank(scoreEarned: comboPoints)
         showObjectiveCompleteIfNeeded()
-        Effects.shake(worldNode, intensity: affected >= 12 ? 14 : 9, duration: 0.32)
-        run(.wait(forDuration: 0.28)) { [weak self] in
+        Effects.shake(worldNode,
+                      intensity: presentation?.isMajor == true ? 12 : min(8, CGFloat(affected) * 0.55),
+                      duration: presentation?.isMajor == true ? 0.34 : 0.24)
+        let presentationDelay = presentation?.maximumDelay(in: resolvedMatches) ?? 0
+        run(.wait(forDuration: max(0.24, presentationDelay + 0.20))) { [weak self] in
             self?.applyCollapseAndRefill()
         }
     }
@@ -524,19 +506,27 @@ extension GameScene {
         matches = applySugarRushIfReady(to: matches, depth: depth)
         // A 2x2 square clears like a match (and spawns a Fish below).
         for sq in squares { for p in sq { matches.insert(p) } }
-        // Each activated fish also seeks a goal/blocker tile to clear.
-        for p in matches where grid[p.r][p.c]?.special == .fish {
-            if let target = fishTarget(excluding: matches) { matches.insert(target) }
-        }
+        // Each activated fish also seeks a deterministic goal/blocker tile.
+        matches = addingObjectiveFishTargets(to: matches)
 
         // Fish from a square outranks a plain striped; otherwise use the run spawn.
-        var effectiveSpawn = Engine.specialSpawn(from: groups,
-                                                 bombRunLength: levelConfig.bombSpawnRunLength)
+        let eligibleSpawnPositions = Set(matches.filter { p in
+            guard let cell = grid[p.r][p.c] else { return false }
+            return cell.blocker == nil && cell.kind == .normal
+        })
+        var effectiveSpawn = Engine.specialSpawn(
+            from: groups,
+            bombRunLength: levelConfig.bombSpawnRunLength,
+            preferredPositions: depth == 1 ? preferredSpecialSpawnPositions : [],
+            eligiblePositions: eligibleSpawnPositions)
         if let square = squares.first,
            effectiveSpawn == nil
             || effectiveSpawn?.special == .stripedRow
             || effectiveSpawn?.special == .stripedCol {
-            effectiveSpawn = SpecialSpawn(position: square[0], special: .fish)
+            let preferred = depth == 1
+                ? preferredSpecialSpawnPositions.first(where: square.contains)
+                : nil
+            effectiveSpawn = SpecialSpawn(position: preferred ?? square[0], special: .fish)
         }
         let specialSpawn = effectiveSpawn
         let specialSpawnColor = specialSpawn.flatMap { grid[$0.position.r][$0.position.c]?.color }
@@ -551,9 +541,13 @@ extension GameScene {
         }
         totalCascadeClears += cleared
         let specialsInChain = preClear.values.reduce(into: 0) { $0 += ($1.special != nil ? 1 : 0) }
+        let cascadeCredit = turnIntent == .playerSmash ? 0 : (depth == 1 ? 1.0 : 0.50)
         recordChainProgress(tilesCleared: clearResult.cleared.count,
                             blockersDamaged: clearResult.damagedBlockers.count,
-                            specialsTriggered: specialsInChain)
+                            specialsTriggered: specialsInChain,
+                            chargeMultiplier: cascadeCredit,
+                            objectiveHits: objectiveImpact(preClear: preClear,
+                                                           clearResult: clearResult))
         recordGoalProgress(preClear: preClear,
                            cleared: clearResult.cleared,
                            damaged: clearResult.damagedBlockers,
@@ -574,15 +568,17 @@ extension GameScene {
         let centroid = CGPoint(x: sx / CGFloat(cleared), y: sy / CGFloat(cleared))
 
         // Animate clear + spawn per-tile bursts
-        let clearGroup = SKAction.group([
-            .scale(to: 1.25, duration: 0.08),
-            .fadeOut(withDuration: 0.16)
+        let clearGroup = SKAction.sequence([
+            .group([.scaleX(to: 1.06, duration: 0.035),
+                    .scaleY(to: 0.90, duration: 0.035)]),
+            .group([.scale(to: 1.25, duration: 0.10),
+                    .fadeOut(withDuration: 0.15)])
         ])
 
-        // Crank effects up for the first few levels so the user gets that
-        // "ooh, satisfying" hit right out of the gate.
-        let earlyBoost = levelNumber <= 5
-        let isBigSmash = cleared >= 4 || depth >= 2 || earlyBoost
+        let feedback = TurnFeedbackPolicy.feedback(depth: depth, cleared: cleared)
+        let isBigSmash = feedback.tier >= .big
+        playTriggeredSpecialEffects(preClear: preClear)
+        Audio.shared.play(.fruitBreak, pan: soundPan(at: centroid))
 
         var nodesToRemove: [SKNode] = []
         for p in clearResult.cleared {
@@ -592,29 +588,27 @@ extension GameScene {
 
                 // Tile-color particle burst at this tile
                 let tint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
-                let burst = Effects.makeTileBurst(tint: tint)
+                let particleCount: Int
+                switch feedback.tier {
+                case .match: particleCount = 6
+                case .nice: particleCount = 8
+                case .big: particleCount = 10
+                case .huge, .epic: particleCount = 12
+                }
+                let burst = Effects.makeTileBurst(tint: tint, count: particleCount)
                 burst.position = n.position
                 worldNode.addChild(burst)
                 burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
 
-                // Colored shards "cracking" the candy
-                let shardCount = earlyBoost ? 9 : (isBigSmash ? 8 : 6)
-                let shardSize: CGFloat = earlyBoost ? 22 : 18
-                let shards = Effects.makeShardBurst(tint: tint,
-                                                     count: shardCount,
-                                                     size: shardSize)
-                shards.position = n.position
-                shards.zPosition = 705
-                worldNode.addChild(shards)
-                shards.run(.sequence([.wait(forDuration: 1.0), .removeFromParent()]))
-                if isBigSmash {
-                    let chunks = Effects.makeChunkBurst(tint: tint,
-                                                        count: earlyBoost ? 7 : 5,
-                                                        size: earlyBoost ? 18 : 14)
-                    chunks.position = n.position
-                    chunks.zPosition = 735
-                    worldNode.addChild(chunks)
-                }
+                let fruitTexture = (n.childNode(withName: "emoji") as? SKSpriteNode)?.texture
+                let fragmentCount = feedback.tier >= .huge ? 6 : (isBigSmash ? 5 : 3)
+                let fragments = Effects.makeFruitFragmentBurst(texture: fruitTexture,
+                                                                tint: tint,
+                                                                count: fragmentCount,
+                                                                size: isBigSmash ? 17 : 13)
+                fragments.position = n.position
+                fragments.zPosition = 735
+                worldNode.addChild(fragments)
             }
         }
         for p in clearResult.damagedBlockers {
@@ -646,22 +640,12 @@ extension GameScene {
         let flash = Effects.makeImpactFlash(at: centroid, big: isBigSmash)
         worldNode.addChild(flash)
 
-        let sparkleCount = earlyBoost ? 14 : (isBigSmash ? 10 : 7)
-        let sparkles = Effects.makeStarSparkle(count: sparkleCount)
-        sparkles.position = centroid
-        sparkles.zPosition = 745
-        worldNode.addChild(sparkles)
-
-        // Vertical "candy beam" through the cluster column for combos / big clears.
-        // Picks the column closest to the centroid and lights it up like a
-        // striped-candy detonation.
-        if depth >= 2 || cleared >= 5 {
-            let beamCol = matches.first?.c ?? 0
-            let beamX = point(forRow: 0, col: beamCol).x
-            let beam = Effects.makeColumnBeam(x: beamX, fromY: -size.height / 2,
-                                               toY: size.height / 2,
-                                               tint: UIColor(hex: "#F472B6"))
-            worldNode.addChild(beam)
+        if feedback.tier >= .nice {
+            let sparkleCount = feedback.tier >= .huge ? 8 : (isBigSmash ? 6 : 4)
+            let sparkles = Effects.makeStarSparkle(count: sparkleCount)
+            sparkles.position = centroid
+            sparkles.zPosition = 745
+            worldNode.addChild(sparkles)
         }
 
         // Score popup at centroid
@@ -674,33 +658,36 @@ extension GameScene {
         awardCascadeCoinBonus(depth: depth, cleared: cleared, at: centroid)
         showObjectiveCompleteIfNeeded()
         chargeSugarRushIfNeeded(depth: depth)
+        // Depth increments once per step, so this fires once per chain.
+        if depth == 3 { DailyMissions.record([.chainReaction]) }
         let popupColor: UIColor = depth >= 2 ? UIColor(hex: "#FACC15") : .white
         Effects.showScorePopup(added, at: centroid, in: self, color: popupColor)
 
-        // Banner: combo (depth 2+) takes priority, else big-clear (4+ tiles)
-        if let combo = Effects.comboPhrase(forDepth: depth) {
+        // Celebration channels are tiered by TurnFeedbackPolicy so each one
+        // (banner → beam → shake → confetti) is rarer than the last.
+        // Combo banner (depth 2+) takes priority over the big-clear phrase.
+        if feedback.showsBanner, let combo = Effects.comboPhrase(forDepth: depth) {
             Effects.showComboBanner(text: combo.text, color: combo.color, in: self)
-            Effects.notify(.success)
             Audio.shared.play(.combo(depth: depth))
-        } else if let big = Effects.bigClearPhrase(forCount: cleared) {
+        } else if feedback.showsBanner, let big = Effects.bigClearPhrase(forCount: cleared) {
             Effects.showComboBanner(text: big.text, color: big.color, in: self)
-            Effects.haptic(.medium)
             Audio.shared.play(.match)
         } else {
-            Effects.haptic(.medium)
             Audio.shared.play(.match)
         }
 
-        // Confetti for big chains or massive single clears
-        if depth >= 3 || cleared >= 6 {
+        switch feedback.haptic {
+        case .light:   Effects.haptic(.light)
+        case .medium:  Effects.haptic(.medium)
+        case .success: Effects.notify(.success)
+        }
+
+        if feedback.spawnsConfetti {
             spawnConfetti()
         }
 
-        // Screen shake for sizable clears
-        if cleared >= 4 || depth >= 2 {
-            Effects.shake(worldNode,
-                          intensity: cleared >= 6 ? 12 : 7,
-                          duration: 0.28)
+        if let shake = feedback.shakeIntensity {
+            Effects.shake(worldNode, intensity: CGFloat(shake), duration: 0.28)
         }
 
         // Spawn the earned special tile at the centre/intersection of the match.
@@ -714,6 +701,11 @@ extension GameScene {
                             properties: ["level": "\(levelNumber)",
                                          "special": spawn.special.rawValue])
             createdSpecials += 1
+            turnCreatedSpecials += 1
+            if depth == 1, preferredSpecialSpawnPositions.contains(spawn.position) {
+                addSmashCharge(8, source: "intentional_special")
+            }
+            DailyMissions.record([.specialsCreated(1)])
             showSpecialHint(spawn.special)
         }
 
@@ -731,21 +723,47 @@ extension GameScene {
     }
 
     func finishCascadeTurn() {
+        if turnConsumesMove,
+           !bossDamageAppliedThisTurn,
+           chainSpecialsTriggered > 0 || cascadeDepth >= 3 {
+            damageBossShield(by: 1, source: cascadeDepth >= 3 ? "deep_cascade" : "special_chain")
+            bossDamageAppliedThisTurn = true
+        }
+        if turnConsumesMove {
+            finishTurnMastery()
+        }
         // End of the player's turn: chocolate gets one chance to spread,
         // but only if we didn't damage one this turn (adjacency rule).
         applyChocolateSpreadIfDue()
         tickSyrupIfNeeded()
         tickCountdownFusesIfNeeded()
+        tickBossPressureIfNeeded()
         if !isLevelGoalComplete, movesLeft > 0, !Engine.hasAnyMoves(grid) {
             autoReshuffleNoMoves()
             return
         }
-        grantComboFreeSpecialIfCharged()
+        preferredSpecialSpawnPositions.removeAll()
         dropMercySpecialIfStruggling()
         isResolving = false
+        if turnConsumesMove {
+            Analytics.track("turn_combo_summary",
+                            properties: ["level": "\(levelNumber)",
+                                         "tiles": "\(chainTilesCleared)",
+                                         "specials": "\(chainSpecialsTriggered)",
+                                         "blockers": "\(chainBlockersDamaged)",
+                                         "objective_hits": "\(chainObjectiveHits)",
+                                         "cascade_depth": "\(cascadeDepth)",
+                                         "smash_charge": "\(smashCharge)",
+                                         "flow": "\(flowLevel)",
+                                         "intent": turnIntent.rawValue,
+                                         "sugar_rush_ready": "\(sugarRushCharged)"])
+        }
         maybeShowComboNudge()
         checkLevelEnd()
         scheduleIdleHint()
+        turnConsumesMove = false
+        bossDamageAppliedThisTurn = false
+        turnPrimaryAnchor = nil
     }
 
     /// One-time teaching: the first time two power-ups sit orthogonally adjacent,
@@ -766,14 +784,21 @@ extension GameScene {
         }
     }
 
-    /// Anti-frustration: when the player is low on moves, the objective isn't
-    /// done, and there's no special on the board to lean on, occasionally gift a
-    /// striped/wrapped so a tight finish stays winnable and exciting.
+    /// Anti-frustration that is earned rather than random: after repeated losses,
+    /// one visibly announced special appears on a genuinely tight finish. Shared
+    /// daily/tower boards remain untouched and the assist can fire only once.
     func dropMercySpecialIfStruggling() {
-        guard !levelEnded, !isLevelGoalComplete, (1...4).contains(movesLeft) else { return }
+        guard !levelEnded,
+              !isLevelGoalComplete,
+              !isDailyChallengeRun,
+              towerRun == nil,
+              !mercySpecialGrantedThisAttempt,
+              (1...2).contains(movesLeft),
+              primaryGoalProgressFraction < 0.88 else { return }
+        let failures = Analytics.levelStats(for: levelNumber)["fails"] ?? 0
+        guard failures >= 2 else { return }
         let hasSpecial = grid.contains { row in row.contains { $0?.special != nil } }
         guard !hasSpecial else { return }
-        guard Int.random(in: 0..<100, using: &gameplayRNG) < 30 else { return }
         var candidates: [Pos] = []
         for r in 0..<rows {
             for c in 0..<cols {
@@ -782,39 +807,74 @@ extension GameScene {
                 candidates.append(Pos(r: r, c: c))
             }
         }
-        guard let p = candidates.randomElement(using: &gameplayRNG) else { return }
-        grid[p.r][p.c]?.special = Bool.random(using: &gameplayRNG) ? .stripedRow : .wrapped
+        func priority(_ position: Pos) -> Int {
+            var value = position.r
+            let neighbors = [Pos(r: position.r - 1, c: position.c),
+                             Pos(r: position.r + 1, c: position.c),
+                             Pos(r: position.r, c: position.c - 1),
+                             Pos(r: position.r, c: position.c + 1)]
+                .filter { $0.r >= 0 && $0.r < rows && $0.c >= 0 && $0.c < cols }
+            value += neighbors.filter { grid[$0.r][$0.c]?.blocker != nil }.count * 100
+            if case .collectColor(let index, _) = levelConfig.goal {
+                let target = palette[max(0, index) % max(1, palette.count)]
+                if grid[position.r][position.c]?.color == target { value += 70 }
+            }
+            return value
+        }
+        candidates.sort {
+            let lhs = priority($0), rhs = priority($1)
+            if lhs != rhs { return lhs > rhs }
+            if $0.r != $1.r { return $0.r > $1.r }
+            return $0.c < $1.c
+        }
+        guard let p = candidates.first else { return }
+        let granted: Special
+        switch levelConfig.goal {
+        case .clearBlockers, .openChests:
+            granted = .wrapped
+        case .collectIngredients, .collectKeys, .collectIngredientsAndKeys:
+            granted = .stripedCol
+        default:
+            granted = .stripedRow
+        }
+        mercySpecialGrantedThisAttempt = true
+        grid[p.r][p.c]?.special = granted
         refreshNode(at: p)
         nodes[p.r][p.c]?.run(.sequence([.scale(to: 1.2, duration: 0.12),
                                         .scale(to: 1.0, duration: 0.14)]))
-        Effects.showComboBanner(text: String(localized: "LUCKY DROP!"),
+        Effects.showComboBanner(text: String(localized: "SECOND WIND!"),
                                 color: UIColor(hex: "#34D399"), in: self)
-        Effects.notify(.success)
+        Effects.haptic(.medium, intensity: 0.68)
+        Analytics.track("mercy_special_granted",
+                        properties: ["level": "\(levelNumber)",
+                                     "failures": "\(failures)",
+                                     "progress": "\(primaryGoalProgressFraction)",
+                                     "special": granted.rawValue])
     }
 
-    /// Mechanical payoff for a max-tier cascade chain: plant a free special on the
-    /// board so big combos reward momentum with a tool, not just a banner. Granted
-    /// at most once per swap chain (gated by `sugarRushCharged`).
-    func grantComboFreeSpecialIfCharged() {
-        guard !levelEnded,
-              !sugarRushCharged,
-              lastChainTierFired >= GameScene.comboTiers.count else { return }
-        sugarRushCharged = true
-        var candidates: [Pos] = []
-        for r in 0..<rows {
-            for c in 0..<cols {
-                guard let cell = grid[r][c], cell.blocker == nil,
-                      cell.kind == .normal, cell.special == nil else { continue }
-                candidates.append(Pos(r: r, c: c))
-            }
+    var primaryGoalProgressFraction: Double {
+        switch levelConfig.goal {
+        case .score:
+            return min(1, Double(score) / Double(max(1, scoreTarget)))
+        case .clearBlockers:
+            return min(1, 1 - Double(remainingBlockerCount()) / Double(max(1, startingBlockers)))
+        case .collectColor(_, let count):
+            return min(1, Double(collectedGoalTiles) / Double(max(1, count)))
+        case .createSpecials(let count):
+            return min(1, Double(createdSpecials) / Double(max(1, count)))
+        case .detonateBombs(let count):
+            return min(1, Double(detonatedBombs) / Double(max(1, count)))
+        case .collectIngredients(let count):
+            return min(1, Double(collectedIngredients) / Double(max(1, count)))
+        case .collectKeys(let count):
+            return min(1, Double(collectedKeys) / Double(max(1, count)))
+        case .openChests(let count):
+            return min(1, Double(openedChests) / Double(max(1, count)))
+        case .collectIngredientsAndKeys(let ingredients, let keys):
+            let ingredientProgress = Double(collectedIngredients) / Double(max(1, ingredients))
+            let keyProgress = Double(collectedKeys) / Double(max(1, keys))
+            return min(1, (ingredientProgress + keyProgress) / 2)
         }
-        guard let p = candidates.randomElement(using: &gameplayRNG) else { return }
-        grid[p.r][p.c]?.special = Bool.random(using: &gameplayRNG) ? .wrapped : .bomb
-        refreshNode(at: p)
-        nodes[p.r][p.c]?.run(.sequence([.scale(to: 1.2, duration: 0.12),
-                                        .scale(to: 1.0, duration: 0.16)]))
-        Effects.showComboBanner(text: String(localized: "FREE SPECIAL!"),
-                                color: UIColor(hex: "#A855F7"), in: self)
-        Effects.notify(.success)
     }
+
 }

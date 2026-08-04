@@ -53,6 +53,13 @@ enum Persistence {
         static let resetLockActive = "ss.resetLockActive"
         static let pushAuthAsked = "ss.pushAuthRequested"
         static let gcOptIn       = "ss.gameCenterOptIn"
+        static let missionProgress = "ss.missionProgress"
+        static let missionClaimed  = "ss.missionClaimed"
+        static let towerFloor      = "ss.towerFloor"
+        static let towerWeek       = "ss.towerWeek"
+        static let towerPerks      = "ss.towerPerks"
+        static let towerRunCoins   = "ss.towerRunCoins"
+        static let towerBestFloor  = "ss.towerBestFloor"
     }
 
     /// Whether the player has opted into Game Center sign-in. Defaults to true
@@ -316,6 +323,53 @@ enum Persistence {
             ? (coinDoublerExpiresAt ?? Date())
             : Date()
         coinDoublerExpiresAt = from.addingTimeInterval(TimeInterval(hours) * 3600)
+    }
+
+    // MARK: - Daily missions
+    // Mission ids embed their date key ("2026-07-12-createSpecials"), so a
+    // write for today prunes every other day's entries — storage never grows
+    // past one day's slate. Deliberately not cloud-synced: the slate resets
+    // at midnight anyway and merge conflicts would be worth more than 3 rows.
+
+    private static func missionDatePrefix(of id: String) -> String {
+        String(id.prefix(10))
+    }
+
+    static func missionProgress(id: String) -> Int {
+        guard !isResetLocked else { return 0 }
+        let all = d.dictionary(forKey: K.missionProgress) as? [String: Int] ?? [:]
+        return all[id] ?? 0
+    }
+
+    static func addMissionProgress(id: String, amount: Int) {
+        guard amount > 0 else { return }
+        let prefix = missionDatePrefix(of: id)
+        var all = (d.dictionary(forKey: K.missionProgress) as? [String: Int] ?? [:])
+            .filter { missionDatePrefix(of: $0.key) == prefix }
+        all[id] = (all[id] ?? 0) + amount
+        d.set(all, forKey: K.missionProgress)
+    }
+
+    static func hasClaimedMission(id: String) -> Bool {
+        guard !isResetLocked else { return false }
+        let claimed = d.stringArray(forKey: K.missionClaimed) ?? []
+        return claimed.contains(id)
+    }
+
+    /// Highest Sugar Tower floor ever cleared. Deliberately survives
+    /// `resetAll()`-style locks the same way as other lifetime bests don't —
+    /// it is a local trophy, not synced progress.
+    static var towerBestFloor: Int {
+        get { max(0, d.integer(forKey: K.towerBestFloor)) }
+        set { d.set(max(0, newValue), forKey: K.towerBestFloor) }
+    }
+
+    static func markMissionClaimed(id: String) {
+        let prefix = missionDatePrefix(of: id)
+        var claimed = (d.stringArray(forKey: K.missionClaimed) ?? [])
+            .filter { missionDatePrefix(of: $0) == prefix }
+        if !claimed.contains(id) { claimed.append(id) }
+        d.set(claimed, forKey: K.missionClaimed)
     }
 
     // MARK: - StoreKit delivery ledger

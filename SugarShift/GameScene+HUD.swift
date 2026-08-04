@@ -125,9 +125,14 @@ extension GameScene {
         let lvl = SKLabelNode(fontNamed: "AvenirNext-Heavy")
         lvl.fontSize = Persistence.largeText ? 30 : 28
         lvl.fontColor = .white
-        lvl.text = levelNumber == Levels.endlessLevel
-            ? String(localized: "Score Rush")
-            : String(localized: "Level \(levelNumber)")
+        if levelNumber == Levels.endlessLevel {
+            lvl.text = String(localized: "Score Rush")
+        } else if levelNumber == Levels.towerLevel {
+            let floor = TowerMode.activeRun()?.floor ?? 1
+            lvl.text = String(localized: "Floor \(floor)")
+        } else {
+            lvl.text = String(localized: "Level \(levelNumber)")
+        }
         lvl.verticalAlignmentMode = .center
         lvl.horizontalAlignmentMode = .left
         lvl.position = CGPoint(x: leftX + 32, y: 14)
@@ -645,29 +650,52 @@ extension GameScene {
 
         cashLabel?.isAccessibilityElement = true
         cashLabel?.accessibilityLabel = String(localized: "Coins: \(cash)")
+
+        comboMeterTrack?.isAccessibilityElement = true
+        let bossStatus = levelConfig.isBoss
+            ? String(localized: ", crown shield \(bossShieldRemaining) of \(bossShieldMaximum)")
+            : ""
+        let flowStatus = flowLevel > 0
+            ? String(localized: ", Flow \(flowLevel) of \(TurnMasteryPolicy.maximumFlow)")
+            : ""
+        let rushStatus = sugarRushCharged ? ", " + String(localized: "SUGAR RUSH READY") : ""
+        let targetingStatus: String
+        if smashTargeting, let tier = selectedSmashTier {
+            let instruction = smashPreviewTarget == nil
+                ? String(localized: "TAP A TILE")
+                : String(localized: "TAP AGAIN TO SMASH")
+            targetingStatus = ", " + tier.title + " " + instruction
+        } else {
+            targetingStatus = ""
+        }
+        comboMeterTrack?.accessibilityLabel = String(localized: "Smash charge \(smashCharge) percent\(bossStatus)")
+            + flowStatus + rushStatus + targetingStatus
     }
 
     func goalProgressText() -> String {
+        let primary: String
         switch levelConfig.goal {
         case .score:
-            return "\(min(score, scoreTarget)) / \(scoreTarget)"
+            primary = "\(min(score, scoreTarget)) / \(scoreTarget)"
         case .clearBlockers:
-            return String(localized: "Blockers \(max(0, startingBlockers - remainingBlockerCount()))/\(max(1, startingBlockers))")
+            primary = String(localized: "Blockers \(max(0, startingBlockers - remainingBlockerCount()))/\(max(1, startingBlockers))")
         case .collectColor(let index, let count):
-            return "\(LevelGoal.fruitName(for: index)) \(min(collectedGoalTiles, count))/\(count)"
+            primary = "\(LevelGoal.fruitName(for: index)) \(min(collectedGoalTiles, count))/\(count)"
         case .createSpecials(let count):
-            return String(localized: "Specials \(min(createdSpecials, count))/\(count)")
+            primary = String(localized: "Specials \(min(createdSpecials, count))/\(count)")
         case .detonateBombs(let count):
-            return String(localized: "Bombs \(min(detonatedBombs, count))/\(count)")
+            primary = String(localized: "Bombs \(min(detonatedBombs, count))/\(count)")
         case .collectIngredients(let count):
-            return String(localized: "Baskets \(min(collectedIngredients, count))/\(count)")
+            primary = String(localized: "Baskets \(min(collectedIngredients, count))/\(count)")
         case .collectKeys(let count):
-            return String(localized: "Keys \(min(collectedKeys, count))/\(count)")
+            primary = String(localized: "Keys \(min(collectedKeys, count))/\(count)")
         case .openChests(let count):
-            return String(localized: "Chests \(min(openedChests, count))/\(count)")
+            primary = String(localized: "Chests \(min(openedChests, count))/\(count)")
         case .collectIngredientsAndKeys(let ingredients, let keys):
-            return String(localized: "Baskets \(min(collectedIngredients, ingredients))/\(ingredients)  Keys \(min(collectedKeys, keys))/\(keys)")
+            primary = String(localized: "Baskets \(min(collectedIngredients, ingredients))/\(ingredients)  Keys \(min(collectedKeys, keys))/\(keys)")
         }
+        guard levelConfig.isBoss else { return primary }
+        return primary + String(localized: "  Crown \(bossShieldRemaining)/\(bossShieldMaximum)")
     }
 
     func nextStarText() -> String {

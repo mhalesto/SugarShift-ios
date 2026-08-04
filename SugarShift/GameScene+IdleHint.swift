@@ -24,7 +24,13 @@ extension GameScene {
 
     var shouldOfferIdleHint: Bool {
         guard hintShownThisLevel < 2 else { return false }
-        return Engine.findHintMove(grid) != nil
+        return bestTacticalMove() != nil
+    }
+
+    func bestTacticalMove() -> TacticalMoveAnalysis? {
+        TacticalMoveEvaluator.rankedMoves(in: grid,
+                                          config: levelConfig,
+                                          sugarRushCharged: sugarRushCharged).first
     }
 
     func cancelIdleHint() {
@@ -54,7 +60,8 @@ extension GameScene {
               shopCard == nil, endLevelCard == nil,
               boosterMode == .none else { return }
         guard force || shouldOfferIdleHint else { return }
-        guard let move = Engine.findHintMove(grid) else { return }
+        guard let analysis = bestTacticalMove() else { return }
+        let move = analysis.move
         guard let nodeA = nodes[move.0.r][move.0.c],
               let nodeB = nodes[move.1.r][move.1.c] else { return }
         // Clear any existing hint first so rings/arrows never pile up on the board.
@@ -81,6 +88,19 @@ extension GameScene {
 
         // Arrow connecting the two tiles, telling the player which way to swipe
         let arrow = makeHintArrow(from: nodeA.position, to: nodeB.position)
+        let reason = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        reason.text = tacticalReasonTitle(analysis.reason,
+                                          includesSugarRush: sugarRushCharged)
+        reason.fontSize = 10
+        reason.fontColor = sugarRushCharged
+            ? UIColor(hex: "#F9A8D4")
+            : UIColor(hex: "#FDE68A")
+        reason.verticalAlignmentMode = .center
+        reason.horizontalAlignmentMode = .center
+        reason.position = CGPoint(x: (nodeA.position.x + nodeB.position.x) / 2,
+                                  y: (nodeA.position.y + nodeB.position.y) / 2 + tileSize * 0.62)
+        reason.zPosition = 4
+        arrow.addChild(reason)
         worldNode.addChild(arrow)
         hintArrow = arrow
 

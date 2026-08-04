@@ -7,10 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA770000000000000000000B /* SugarShiftWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA7700000000000000000001 /* SugarShiftWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		FBA000012FA4000100000001 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = FBA000052FA4000100000005 /* FirebaseCore */; };
 		FBA000022FA4000100000002 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = FBA000062FA4000100000006 /* FirebaseAuth */; };
 		FBA000042FA4000100000004 /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = FBA000082FA4000100000008 /* FirebaseFunctions */; };
-		AA770000000000000000000B /* SugarShiftWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA7700000000000000000001 /* SugarShiftWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -211,29 +211,6 @@
 			productReference = 5B167D5C2FA28BA300FFC986 /* SugarShiftTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		AA7700000000000000000004 /* SugarShiftWidgetsExtension */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = AA770000000000000000000C /* Build configuration list for PBXNativeTarget "SugarShiftWidgetsExtension" */;
-			buildPhases = (
-				AA7700000000000000000005 /* Sources */,
-				AA7700000000000000000006 /* Frameworks */,
-				AA7700000000000000000007 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				AA7700000000000000000002 /* SugarShiftWidgets */,
-				AA7700000000000000000003 /* WidgetShared */,
-			);
-			name = SugarShiftWidgetsExtension;
-			packageProductDependencies = (
-			);
-			productName = SugarShiftWidgetsExtension;
-			productReference = AA7700000000000000000001 /* SugarShiftWidgetsExtension.appex */;
-			productType = "com.apple.product-type.app-extension";
-		};
 		5B167D652FA28BA300FFC986 /* SugarShiftUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5B167D762FA28BA300FFC986 /* Build configuration list for PBXNativeTarget "SugarShiftUITests" */;
@@ -256,6 +233,29 @@
 			productName = SugarShiftUITests;
 			productReference = 5B167D662FA28BA300FFC986 /* SugarShiftUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		AA7700000000000000000004 /* SugarShiftWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA770000000000000000000C /* Build configuration list for PBXNativeTarget "SugarShiftWidgetsExtension" */;
+			buildPhases = (
+				AA7700000000000000000005 /* Sources */,
+				AA7700000000000000000006 /* Frameworks */,
+				AA7700000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA7700000000000000000002 /* SugarShiftWidgets */,
+				AA7700000000000000000003 /* WidgetShared */,
+			);
+			name = SugarShiftWidgetsExtension;
+			packageProductDependencies = (
+			);
+			productName = SugarShiftWidgetsExtension;
+			productReference = AA7700000000000000000001 /* SugarShiftWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -522,7 +522,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = SugarShift/SugarShift.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -556,7 +556,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = SugarShift/SugarShift.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -591,7 +591,7 @@
 				CODE_SIGNING_REQUIRED = YES;
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -616,7 +616,7 @@
 				CODE_SIGNING_REQUIRED = YES;
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -640,7 +640,7 @@
 				CODE_SIGNING_REQUIRED = YES;
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
@@ -663,7 +663,7 @@
 				CODE_SIGNING_REQUIRED = YES;
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
@@ -684,7 +684,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = SugarShiftWidgets/SugarShiftWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SugarShiftWidgets/Info.plist;
@@ -711,7 +711,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = SugarShiftWidgets/SugarShiftWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SugarShiftWidgets/Info.plist;

@@ -80,6 +80,9 @@ extension LevelMapScene {
         cashL.position = CGPoint(x: -cashPillW / 2 + 36, y: 0)
         cashPill.addChild(cashL)
         cashLabel = cashL
+        cashPill.isAccessibilityElement = true
+        cashPill.accessibilityLabel = String(localized: "Coins. Open shop")
+        cashPill.accessibilityTraits = .button
 
         // Settings gear button
         let gear = SKShapeNode(circleOfRadius: 22)
@@ -92,6 +95,9 @@ extension LevelMapScene {
 
         let gearIcon = Icons.sprite(Icons.Name.settings, size: 20, tint: .white)
         gear.addChild(gearIcon)
+        gear.isAccessibilityElement = true
+        gear.accessibilityLabel = String(localized: "Settings")
+        gear.accessibilityTraits = .button
     }
 
     func refreshHUD() {
@@ -165,6 +171,10 @@ extension LevelMapScene {
         sub.position = CGPoint(x: -width / 2 + 44, y: -10)
         fitLabel(sub, maxWidth: width - 58, minFontSize: 8)
         banner.addChild(sub)
+
+        banner.isAccessibilityElement = true
+        banner.accessibilityLabel = "\(event.title). \(event.reward.summary)"
+        banner.accessibilityTraits = .button
     }
 
     func buildDailyStreakStrip() {
@@ -196,6 +206,10 @@ extension LevelMapScene {
         label.horizontalAlignmentMode = .center
         fitLabel(label, maxWidth: width - 22, minFontSize: 8)
         strip.addChild(label)
+
+        strip.isAccessibilityElement = true
+        strip.accessibilityLabel = label.text ?? String(localized: "Daily streak")
+        strip.accessibilityTraits = .button
     }
 
     func fitLabel(_ label: SKLabelNode, maxWidth: CGFloat, minFontSize: CGFloat) {
@@ -207,6 +221,7 @@ extension LevelMapScene {
     func refreshFixedPromos() {
         buildEventBanners()
         buildDailyStreakStrip()
+        buildMissionsStrip()
     }
 
     // MARK: - Bottom bar
@@ -254,7 +269,7 @@ extension LevelMapScene {
             .init(name: "tabMap",      label: "Map",   icon: makeMapTabIcon(),       selected: true),
             .init(name: "tabDaily",    label: "Daily", icon: makeDailyTabIcon(),     selected: false),
             .init(name: "tabFriends",  label: "Album", icon: makeFriendsTabIcon(),   selected: false),
-            .init(name: "tabBoosters", label: "Tools", icon: makeBoostersTabIcon(),  selected: false),
+            .init(name: "tabTower",    label: "Tower", icon: makeTowerTabIcon(),     selected: false),
             .init(name: "tabShop",     label: "Shop",  icon: makeShopTabIcon(),      selected: false),
             .init(name: "tabRush",     label: "Rush",  icon: makeRushTabIcon(),      selected: false)
         ]
@@ -279,6 +294,9 @@ extension LevelMapScene {
             slot.position = CGPoint(x: cx, y: cy)
             slot.name = tab.name
             slot.zPosition = 1
+            slot.isAccessibilityElement = true
+            slot.accessibilityLabel = tab.label ?? tab.name
+            slot.accessibilityTraits = tab.selected ? [.button, .selected] : .button
             bottomBar.addChild(slot)
 
             let hit = SKShapeNode(rectOf: CGSize(width: max(50, slotW), height: H - 6),

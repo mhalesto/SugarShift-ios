@@ -1,6 +1,6 @@
 import Foundation
 
-enum Special: String, Equatable {
+enum Special: String, Hashable, CaseIterable {
     case stripedRow = "striped-row"
     case stripedCol = "striped-col"
     case wrapped
@@ -9,6 +9,42 @@ enum Special: String, Equatable {
     /// Seeker. Created by a 2x2 square match; on activation it targets a goal
     /// tile or blocker (handled by the scene) plus a small local splash.
     case fish
+}
+
+/// Canonical result of swapping two specials. The scene owns animation and
+/// objective-aware target selection, while this pure classification is shared
+/// by resolution, previews, hints, and tests so the combo matrix cannot drift.
+enum SpecialComboKind: String, Equatable, CaseIterable {
+    case colorColor
+    case stripeStripe
+    case wrappedStripe
+    case bombStripe
+    case colorStripe
+    case colorWrapped
+    case colorBomb
+    case colorFish
+    case bombBomb
+    case wrappedWrapped
+    case bombWrapped
+    case fishStripe
+    case fishWrapped
+    case fishBomb
+    case fishFish
+}
+
+private struct SpecialPair: Hashable {
+    let first: String
+    let second: String
+
+    init(_ a: Special, _ b: Special) {
+        if a.rawValue <= b.rawValue {
+            first = a.rawValue
+            second = b.rawValue
+        } else {
+            first = b.rawValue
+            second = a.rawValue
+        }
+    }
 }
 
 enum CellKind: Hashable {
@@ -73,12 +109,195 @@ struct ClearResult {
     var affectedCount: Int { cleared.count + damagedBlockers.count }
 }
 
+struct SugarRushResolution: Equatable {
+    let positions: Set<Pos>
+    let anchor: Pos?
+}
+
 struct SpecialSpawn: Equatable {
     let position: Pos
     let special: Special
 }
 
+enum SwapActivation: Equatable {
+    case normal
+    case colorBomb(position: Pos, targetColor: String)
+    case specialCombo(kind: SpecialComboKind,
+                      first: Special,
+                      second: Special,
+                      targetColor: String?)
+}
+
+struct ClassifiedSwap {
+    let grid: Grid
+    let activation: SwapActivation
+}
+
 enum Engine {
+    /// Exhaustive unordered special-pair table. Adding a new special requires
+    /// adding its pairings here; the matrix coverage test enforces that rule.
+    private static let specialComboRules: [SpecialPair: SpecialComboKind] = [
+        SpecialPair(.stripedRow, .stripedRow): .stripeStripe,
+        SpecialPair(.stripedRow, .stripedCol): .stripeStripe,
+        SpecialPair(.stripedCol, .stripedCol): .stripeStripe,
+        SpecialPair(.wrapped, .stripedRow): .wrappedStripe,
+        SpecialPair(.wrapped, .stripedCol): .wrappedStripe,
+        SpecialPair(.bomb, .stripedRow): .bombStripe,
+        SpecialPair(.bomb, .stripedCol): .bombStripe,
+        SpecialPair(.colorBomb, .stripedRow): .colorStripe,
+        SpecialPair(.colorBomb, .stripedCol): .colorStripe,
+        SpecialPair(.fish, .stripedRow): .fishStripe,
+        SpecialPair(.fish, .stripedCol): .fishStripe,
+        SpecialPair(.wrapped, .wrapped): .wrappedWrapped,
+        SpecialPair(.wrapped, .colorBomb): .colorWrapped,
+        SpecialPair(.wrapped, .bomb): .bombWrapped,
+        SpecialPair(.wrapped, .fish): .fishWrapped,
+        SpecialPair(.colorBomb, .colorBomb): .colorColor,
+        SpecialPair(.colorBomb, .bomb): .colorBomb,
+        SpecialPair(.colorBomb, .fish): .colorFish,
+        SpecialPair(.bomb, .bomb): .bombBomb,
+        SpecialPair(.bomb, .fish): .fishBomb,
+        SpecialPair(.fish, .fish): .fishFish
+    ]
+
+    static func specialComboKind(_ first: Special, _ second: Special) -> SpecialComboKind? {
+        specialComboRules[SpecialPair(first, second)]
+    }
+
+    /// Pure footprint resolver for a classified special pair. The caller
+    /// supplies objective-ranked fish targets; everything else is derived from
+    /// immutable grid state. Both gameplay and drag previews consume this exact
+    /// result, and the consumed pair is excluded from incidental re-triggering.
+    static func resolveSpecialCombo(_ grid: Grid,
+                                    kind: SpecialComboKind,
+                                    first: Special,
+                                    second: Special,
+                                    positions: (Pos, Pos),
+                                    targetColor: String?,
+                                    rankedFishTargets: [Pos],
+                                    bigger: Bool) -> Set<Pos> {
+        let rows = grid.count
+        let cols = rows > 0 ? grid[0].count : 0
+        guard rows > 0, cols > 0 else { return [] }
+        var affected = Set<Pos>()
+        let center = positions.1
+
+        func add(_ row: Int, _ column: Int) {
+            guard row >= 0, row < rows, column >= 0, column < cols,
+                  grid[row][column]?.kind == .normal else { return }
+            affected.insert(Pos(r: row, c: column))
+        }
+        func addRow(_ row: Int) { for c in 0..<cols { add(row, c) } }
+        func addColumn(_ column: Int) { for r in 0..<rows { add(r, column) } }
+        func addThreeRows(around row: Int) {
+            let count = min(3, rows)
+            let start = min(max(0, row - 1), max(0, rows - count))
+            for value in start..<(start + count) { addRow(value) }
+        }
+        func addThreeColumns(around column: Int) {
+            let count = min(3, cols)
+            let start = min(max(0, column - 1), max(0, cols - count))
+            for value in start..<(start + count) { addColumn(value) }
+        }
+        func addSquare(_ point: Pos, radius: Int) {
+            for dr in -radius...radius {
+                for dc in -radius...radius { add(point.r + dr, point.c + dc) }
+            }
+        }
+        func colorPositions() -> [Pos] {
+            guard let targetColor else { return [] }
+            var out: [Pos] = []
+            for r in 0..<rows {
+                for c in 0..<cols where grid[r][c]?.color == targetColor {
+                    out.append(Pos(r: r, c: c))
+                }
+            }
+            return out
+        }
+        func postSwapPosition(for special: Special, isFirst: Bool) -> Pos {
+            isFirst ? positions.1 : positions.0
+        }
+        func stripeAndPosition() -> (Special, Pos)? {
+            if first == .stripedRow || first == .stripedCol {
+                return (first, postSwapPosition(for: first, isFirst: true))
+            }
+            if second == .stripedRow || second == .stripedCol {
+                return (second, postSwapPosition(for: second, isFirst: false))
+            }
+            return nil
+        }
+        func addRankedFish(count: Int, radius: Int, lane: Special? = nil) {
+            for target in rankedFishTargets.prefix(count) {
+                addSquare(target, radius: radius)
+                if lane == .stripedRow { addRow(target.r) }
+                if lane == .stripedCol { addColumn(target.c) }
+            }
+        }
+
+        let bombRadius = bigger ? 2 : 1
+        let wrappedRadius = bigger ? 3 : 2
+        switch kind {
+        case .colorColor:
+            for r in 0..<rows { for c in 0..<cols { add(r, c) } }
+        case .stripeStripe:
+            let firstPosition = postSwapPosition(for: first, isFirst: true)
+            let secondPosition = postSwapPosition(for: second, isFirst: false)
+            if first == .stripedRow, second == .stripedRow {
+                addThreeRows(around: center.r)
+            } else if first == .stripedCol, second == .stripedCol {
+                addThreeColumns(around: center.c)
+            } else {
+                if first == .stripedRow { addRow(firstPosition.r) } else { addColumn(firstPosition.c) }
+                if second == .stripedRow { addRow(secondPosition.r) } else { addColumn(secondPosition.c) }
+            }
+        case .wrappedStripe:
+            addThreeRows(around: center.r)
+            addThreeColumns(around: center.c)
+        case .bombStripe:
+            if let (stripe, position) = stripeAndPosition() {
+                stripe == .stripedRow
+                    ? addThreeRows(around: position.r)
+                    : addThreeColumns(around: position.c)
+            }
+            addSquare(center, radius: bombRadius)
+        case .colorStripe:
+            let stripe = stripeAndPosition()?.0 ?? .stripedRow
+            for p in colorPositions() {
+                stripe == .stripedRow ? addRow(p.r) : addColumn(p.c)
+            }
+        case .colorWrapped:
+            for p in colorPositions() { addSquare(p, radius: wrappedRadius) }
+        case .colorBomb:
+            for p in colorPositions() { addSquare(p, radius: bombRadius) }
+        case .colorFish:
+            let matches = colorPositions()
+            affected.formUnion(matches)
+            addRankedFish(count: min(8, max(4, matches.count / 2)), radius: 1)
+        case .bombBomb:
+            addSquare(center, radius: bigger ? 3 : 2)
+        case .wrappedWrapped:
+            addSquare(positions.0, radius: wrappedRadius)
+            addSquare(positions.1, radius: wrappedRadius)
+        case .bombWrapped:
+            addSquare(center, radius: bigger ? 4 : 3)
+        case .fishStripe:
+            addRankedFish(count: 4, radius: 0, lane: stripeAndPosition()?.0)
+        case .fishWrapped:
+            addRankedFish(count: 3, radius: wrappedRadius)
+        case .fishBomb:
+            addRankedFish(count: 5, radius: bombRadius)
+        case .fishFish:
+            addRankedFish(count: 4, radius: 1)
+        }
+
+        affected.insert(positions.0)
+        affected.insert(positions.1)
+        return expandMatchesWithSpecials(grid,
+                                         affected,
+                                         bigger: bigger,
+                                         excludingSpecialsAt: [positions.0, positions.1])
+    }
+
     private static func uid() -> String {
         let t = String(Int(Date().timeIntervalSince1970 * 1000), radix: 36)
         let r = String(Int.random(in: 0..<Int(pow(36.0, 5))), radix: 36)
@@ -132,10 +351,12 @@ enum Engine {
         for r in 0..<rows {
             var c = 0
             while c < cols {
-                guard let cell = grid[r][c] else { c += 1; continue }
+                guard let cell = grid[r][c], cell.kind == .normal else { c += 1; continue }
                 let color = cell.color
                 var k = c + 1
-                while k < cols, grid[r][k]?.color == color { k += 1 }
+                while k < cols,
+                      grid[r][k]?.kind == .normal,
+                      grid[r][k]?.color == color { k += 1 }
                 if k - c >= 3 {
                     var run: [Pos] = []
                     for x in c..<k { run.append(Pos(r: r, c: x)) }
@@ -148,10 +369,12 @@ enum Engine {
         for c in 0..<cols {
             var r = 0
             while r < rows {
-                guard let cell = grid[r][c] else { r += 1; continue }
+                guard let cell = grid[r][c], cell.kind == .normal else { r += 1; continue }
                 let color = cell.color
                 var k = r + 1
-                while k < rows, grid[k][c]?.color == color { k += 1 }
+                while k < rows,
+                      grid[k][c]?.kind == .normal,
+                      grid[k][c]?.color == color { k += 1 }
                 if k - r >= 3 {
                     var run: [Pos] = []
                     for y in r..<k { run.append(Pos(r: y, c: c)) }
@@ -163,33 +386,60 @@ enum Engine {
         return groups
     }
 
-    static func specialSpawn(from groups: [[Pos]], bombRunLength: Int? = nil) -> SpecialSpawn? {
+    static func specialSpawn(from groups: [[Pos]],
+                             bombRunLength: Int? = nil,
+                             preferredPositions: [Pos] = [],
+                             eligiblePositions: Set<Pos>? = nil) -> SpecialSpawn? {
         let hugeRun = max(6, bombRunLength ?? 6)
 
-        if let group = groups.filter({ $0.count >= hugeRun }).max(by: { $0.count < $1.count }) {
-            return SpecialSpawn(position: group[group.count / 2], special: .bomb)
+        func spawnPosition(in positions: [Pos], fallback: Pos) -> Pos? {
+            let eligible = positions.filter { eligiblePositions?.contains($0) ?? true }
+            guard !eligible.isEmpty else { return nil }
+            return preferredPositions.first(where: eligible.contains)
+                ?? (eligible.contains(fallback) ? fallback : eligible[eligible.count / 2])
+        }
+
+        if let group = groups.filter({ $0.count >= hugeRun }).max(by: { $0.count < $1.count }),
+           let position = spawnPosition(in: group, fallback: group[group.count / 2]) {
+            return SpecialSpawn(position: position,
+                                special: .bomb)
         }
 
         let memberships = groupMemberships(groups)
         let intersections = memberships
             .filter { $0.value.count >= 2 }
-            .map { pos, indexes -> (Pos, Int) in
+            .map { pos, indexes -> (position: Pos, combined: [Pos]) in
                 var combined = Set<Pos>()
                 for i in indexes { combined.formUnion(groups[i]) }
-                return (pos, combined.count)
+                return (pos, combined.sorted {
+                    if $0.r != $1.r { return $0.r < $1.r }
+                    return $0.c < $1.c
+                })
             }
-            .filter { $0.1 >= 5 }
+            .filter { $0.combined.count >= 5 }
+            .sorted {
+                if $0.combined.count != $1.combined.count {
+                    return $0.combined.count > $1.combined.count
+                }
+                if $0.position.r != $1.position.r { return $0.position.r < $1.position.r }
+                return $0.position.c < $1.position.c
+            }
 
-        if let wrapped = intersections.max(by: { $0.1 < $1.1 }) {
-            return SpecialSpawn(position: wrapped.0, special: .wrapped)
+        if let wrapped = intersections.first,
+           let position = spawnPosition(in: wrapped.combined, fallback: wrapped.position) {
+            return SpecialSpawn(position: position,
+                                special: .wrapped)
         }
 
-        if let group = groups.filter({ $0.count >= 5 }).max(by: { $0.count < $1.count }) {
-            return SpecialSpawn(position: group[group.count / 2], special: .colorBomb)
+        if let group = groups.filter({ $0.count >= 5 }).max(by: { $0.count < $1.count }),
+           let position = spawnPosition(in: group, fallback: group[group.count / 2]) {
+            return SpecialSpawn(position: position,
+                                special: .colorBomb)
         }
 
-        if let group = groups.first(where: { $0.count == 4 }) {
-            return SpecialSpawn(position: group[group.count / 2],
+        if let group = groups.first(where: { $0.count == 4 }),
+           let position = spawnPosition(in: group, fallback: group[group.count / 2]) {
+            return SpecialSpawn(position: position,
                                 special: isHorizontal(group) ? .stripedRow : .stripedCol)
         }
 
@@ -200,14 +450,27 @@ enum Engine {
     /// cleared set with whatever the special triggers (3×3 for bomb, etc.).
     static func expandMatchesWithSpecials(_ grid: Grid,
                                           _ matches: Set<Pos>,
-                                          bigger: Bool = false) -> Set<Pos> {
+                                          bigger: Bool = false,
+                                          excludingSpecialsAt excluded: Set<Pos>? = nil) -> Set<Pos> {
         let rows = grid.count, cols = grid[0].count
-        var out = matches
-        let add: (Int, Int) -> Void = { r, c in
-            if r >= 0, r < rows, c >= 0, c < cols { out.insert(Pos(r: r, c: c)) }
+        var out = Set(matches.filter { p in
+            p.r >= 0 && p.r < rows && p.c >= 0 && p.c < cols
+                && grid[p.r][p.c]?.kind == .normal
+        })
+        var queue = Array(out)
+        var triggered = Set<Pos>()
+        func add(_ r: Int, _ c: Int) {
+            guard r >= 0, r < rows, c >= 0, c < cols,
+                  grid[r][c]?.kind == .normal else { return }
+            let p = Pos(r: r, c: c)
+            if out.insert(p).inserted { queue.append(p) }
         }
-        for p in matches {
-            guard let cell = grid[p.r][p.c], let sp = cell.special else { continue }
+
+        while let p = queue.popLast() {
+            guard excluded?.contains(p) != true,
+                  triggered.insert(p).inserted,
+                  let cell = grid[p.r][p.c],
+                  let sp = cell.special else { continue }
             switch sp {
             case .bomb:
                 let radius = bigger ? 2 : 1
@@ -295,7 +558,7 @@ enum Engine {
                     cell.blocker = nil
                 }
                 grid[p.r][p.c] = cell
-            } else {
+            } else if cell.kind == .normal {
                 grid[p.r][p.c] = nil
                 cleared.insert(p)
             }
@@ -559,27 +822,58 @@ enum Engine {
 
     /// Returns the swapped grid only if the swap creates a match at either position.
     static func swapIfValid(_ grid: Grid, _ a: Pos, _ b: Pos) -> (didSwap: Bool, grid: Grid) {
+        guard let classified = classifySwap(grid, a, b) else { return (false, grid) }
+        return (true, classified.grid)
+    }
+
+    /// Single source of truth for whether an adjacent swap is legal and which
+    /// activation it represents.
+    static func classifySwap(_ grid: Grid, _ a: Pos, _ b: Pos) -> ClassifiedSwap? {
         var g = grid
         let rows = g.count, cols = g[0].count
         guard a.r >= 0, a.r < rows, a.c >= 0, a.c < cols,
               b.r >= 0, b.r < rows, b.c >= 0, b.c < cols,
+              abs(a.r - b.r) + abs(a.c - b.c) == 1,
               g[a.r][a.c] != nil, g[b.r][b.c] != nil else {
-            return (false, grid)
+            return nil
         }
+        let cellA = g[a.r][a.c]!
+        let cellB = g[b.r][b.c]!
         let tmp = g[a.r][a.c]
         g[a.r][a.c] = g[b.r][b.c]
         g[b.r][b.c] = tmp
-        if isColorBombSwap(grid, a, b) {
-            return (true, g)
+
+        if let first = cellA.special,
+           let second = cellB.special,
+           let kind = specialComboKind(first, second) {
+            let targetColor: String?
+            if first == .colorBomb { targetColor = cellB.color }
+            else if second == .colorBomb { targetColor = cellA.color }
+            else { targetColor = nil }
+            return ClassifiedSwap(grid: g,
+                                  activation: .specialCombo(kind: kind,
+                                                            first: first,
+                                                            second: second,
+                                                            targetColor: targetColor))
+        }
+        if cellA.special == .colorBomb {
+            return ClassifiedSwap(grid: g,
+                                  activation: .colorBomb(position: b,
+                                                         targetColor: cellB.color))
+        }
+        if cellB.special == .colorBomb {
+            return ClassifiedSwap(grid: g,
+                                  activation: .colorBomb(position: a,
+                                                         targetColor: cellA.color))
         }
         let createsNewMatch = (createsMatch(g, at: a) && !createsMatch(grid, at: a))
             || (createsMatch(g, at: b) && !createsMatch(grid, at: b))
         let createsNewSquare = (createsSquare(g, at: a) && !createsSquare(grid, at: a))
             || (createsSquare(g, at: b) && !createsSquare(grid, at: b))
         if createsNewMatch || createsNewSquare {
-            return (true, g)
+            return ClassifiedSwap(grid: g, activation: .normal)
         }
-        return (false, grid)
+        return nil
     }
 
     static func hasAnyMoves(_ grid: Grid) -> Bool {
@@ -610,9 +904,12 @@ enum Engine {
         var moves: [(move: (Pos, Pos), score: Int)] = []
 
         let consider: (Pos, Pos) -> Void = { a, b in
-            let result = swapIfValid(grid, a, b)
-            guard result.didSwap else { return }
-            let score = scoreSwapForHint(grid: grid, swappedGrid: result.grid, a: a, b: b)
+            guard let result = classifySwap(grid, a, b) else { return }
+            let score = scoreSwapForHint(grid: grid,
+                                         swappedGrid: result.grid,
+                                         activation: result.activation,
+                                         a: a,
+                                         b: b)
             moves.append(((a, b), score))
         }
 
@@ -643,17 +940,100 @@ enum Engine {
         bestMoveScore(grid) >= minimumScore
     }
 
+    /// Expands an already-legal clear into Sugar Rush's cross. The preferred
+    /// anchor is normally the tile the player moved, so Rush rewards choosing
+    /// *where* to act instead of attaching itself to an arbitrary sorted match.
+    /// If that tile is outside the resolved footprint, the nearest affected
+    /// tile is selected with deterministic row/column tie-breaking.
+    static func sugarRushResolution(in grid: Grid,
+                                    base: Set<Pos>,
+                                    preferredAnchor: Pos?) -> SugarRushResolution {
+        guard !base.isEmpty else {
+            return SugarRushResolution(positions: base, anchor: nil)
+        }
+        let valid = base.filter { position in
+            position.r >= 0 && position.r < grid.count
+                && position.c >= 0 && position.c < grid[position.r].count
+                && grid[position.r][position.c] != nil
+        }
+        guard !valid.isEmpty else {
+            return SugarRushResolution(positions: base, anchor: nil)
+        }
+
+        let anchor: Pos
+        if let preferredAnchor, valid.contains(preferredAnchor) {
+            anchor = preferredAnchor
+        } else {
+            anchor = valid.sorted { lhs, rhs in
+                if let preferredAnchor {
+                    let leftDistance = abs(lhs.r - preferredAnchor.r) + abs(lhs.c - preferredAnchor.c)
+                    let rightDistance = abs(rhs.r - preferredAnchor.r) + abs(rhs.c - preferredAnchor.c)
+                    if leftDistance != rightDistance { return leftDistance < rightDistance }
+                }
+                if lhs.r != rhs.r { return lhs.r < rhs.r }
+                return lhs.c < rhs.c
+            }.first!
+        }
+
+        var positions = base
+        for c in 0..<grid[anchor.r].count where grid[anchor.r][c] != nil {
+            positions.insert(Pos(r: anchor.r, c: c))
+        }
+        for r in 0..<grid.count
+            where anchor.c < grid[r].count && grid[r][anchor.c] != nil {
+            positions.insert(Pos(r: r, c: anchor.c))
+        }
+        return SugarRushResolution(positions: positions, anchor: anchor)
+    }
+
+    /// Canonical, hole-safe footprint for a player-targeted Smash. Special
+    /// chaining is deliberately applied by the caller so analysis and live
+    /// resolution can inspect the same base shape first.
+    static func playerSmashFootprint(in grid: Grid,
+                                     centeredAt center: Pos,
+                                     tier: PlayerSmashTier) -> Set<Pos> {
+        var positions = Set<Pos>()
+        func add(_ row: Int, _ column: Int) {
+            guard row >= 0, row < grid.count,
+                  column >= 0, column < grid[row].count,
+                  grid[row][column]?.kind == .normal else { return }
+            positions.insert(Pos(r: row, c: column))
+        }
+
+        if tier == .focused || tier == .mega {
+            for dr in -1...1 {
+                for dc in -1...1 { add(center.r + dr, center.c + dc) }
+            }
+        }
+        if tier == .cross || tier == .mega {
+            guard center.r >= 0, center.r < grid.count else { return positions }
+            for column in 0..<grid[center.r].count { add(center.r, column) }
+            for row in 0..<grid.count where center.c < grid[row].count {
+                add(row, center.c)
+            }
+        }
+        return positions
+    }
+
     /// Higher score = better hint to teach. Combines special-activation,
     /// special-creation, and match length so a 4-run swap that lights up an
     /// existing color bomb beats a plain 3-run swap on a barren patch.
     private static func scoreSwapForHint(grid: Grid,
                                          swappedGrid: Grid,
+                                         activation: SwapActivation,
                                          a: Pos,
                                          b: Pos) -> Int {
-        // Activating an existing special: huge weight.
-        let activatesSpecial = (grid[a.r][a.c]?.special != nil) ||
-                               (grid[b.r][b.c]?.special != nil)
         let groups = findMatchGroups(swappedGrid)
+        let matchedPositions = Set(groups.flatMap { $0 })
+        let activatesSpecial: Bool
+        switch activation {
+        case .colorBomb, .specialCombo:
+            activatesSpecial = true
+        case .normal:
+            activatesSpecial = matchedPositions.contains { p in
+                swappedGrid[p.r][p.c]?.special != nil
+            }
+        }
         let createdSpawn = specialSpawn(from: groups)
         let createsFish = findSquares(swappedGrid).contains { square in
             (square.contains(a) || square.contains(b))
@@ -693,11 +1073,6 @@ enum Engine {
         return group.allSatisfy { $0.r == first.r }
     }
 
-    private static func isColorBombSwap(_ g: Grid, _ a: Pos, _ b: Pos) -> Bool {
-        guard g[a.r][a.c] != nil, g[b.r][b.c] != nil else { return false }
-        return g[a.r][a.c]?.special == .colorBomb || g[b.r][b.c]?.special == .colorBomb
-    }
-
     private static func orthogonalNeighbors(of pos: Pos, rows: Int, cols: Int) -> [Pos] {
         [
             Pos(r: pos.r - 1, c: pos.c),
@@ -715,21 +1090,21 @@ enum Engine {
 
     private static func createsMatch(_ g: Grid, at p: Pos) -> Bool {
         let rows = g.count, cols = g[0].count
-        guard let here = g[p.r][p.c] else { return false }
+        guard let here = g[p.r][p.c], here.kind == .normal else { return false }
         let color = here.color
 
         var cnt = 1
         var x = p.c - 1
-        while x >= 0, g[p.r][x]?.color == color { cnt += 1; x -= 1 }
+        while x >= 0, g[p.r][x]?.kind == .normal, g[p.r][x]?.color == color { cnt += 1; x -= 1 }
         x = p.c + 1
-        while x < cols, g[p.r][x]?.color == color { cnt += 1; x += 1 }
+        while x < cols, g[p.r][x]?.kind == .normal, g[p.r][x]?.color == color { cnt += 1; x += 1 }
         if cnt >= 3 { return true }
 
         cnt = 1
         var y = p.r - 1
-        while y >= 0, g[y][p.c]?.color == color { cnt += 1; y -= 1 }
+        while y >= 0, g[y][p.c]?.kind == .normal, g[y][p.c]?.color == color { cnt += 1; y -= 1 }
         y = p.r + 1
-        while y < rows, g[y][p.c]?.color == color { cnt += 1; y += 1 }
+        while y < rows, g[y][p.c]?.kind == .normal, g[y][p.c]?.color == color { cnt += 1; y += 1 }
         return cnt >= 3
     }
 

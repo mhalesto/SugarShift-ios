@@ -350,6 +350,9 @@ final class HomeScene: SKScene {
         let icon = Icons.sprite(Icons.Name.settings, size: 20,
                                 tint: UIColor(hex: "#EC4899"))
         gear.addChild(icon)
+        gear.isAccessibilityElement = true
+        gear.accessibilityLabel = String(localized: "Settings")
+        gear.accessibilityTraits = .button
     }
 
     // MARK: - Touch handling

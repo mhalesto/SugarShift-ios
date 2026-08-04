@@ -407,8 +407,22 @@ enum Levels {
                     isBoss: false)
     }
 
+    /// Sentinel for Sugar Tower floors. The config comes from the active
+    /// tower run (floor + drafted perks), so the normal launch flow works
+    /// unchanged — same trick as `endlessLevel`.
+    static let towerLevel = 200_000
+
+    static func towerConfig() -> LevelConfig {
+        let run = TowerMode.activeRun()
+            ?? TowerRun(weekKey: TowerMode.weekKey(), floor: 1, perks: [], coinsEarned: 0)
+        return TowerMode.floorConfig(weekKey: run.weekKey,
+                                     floor: run.floor,
+                                     perks: run.perks)
+    }
+
     static func config(for level: Int) -> LevelConfig {
         if level == endlessLevel { return endlessConfig() }
+        if level == towerLevel { return towerConfig() }
         let n = max(1, min(level, count))
         switch n {
         case 1:  return mk(n, 5, 5, 3, 28,  1_100,  .starter,   .midnight,
@@ -433,7 +447,7 @@ enum Levels {
         case 7:  return mk(n, 8, 8, 4, 32, 3_900,  .combo,     .glacier,
                            layout(mask: donut8()),
                            "Bigger canvas — match around the hole.")
-        case 8:  return mk(n, 8, 8, 4, 32, 4_200,  .ice,       .glacier,
+        case 8:  return mk(n, 8, 8, 4, 32, 4_150,  .ice,       .glacier,
                            layout(mask: plus8(), ice: 3),
                            "Plus-shape & deep frost.")
         case 9:  return mk(n, 8, 8, 4, 31, 4_600,  .bombRush,  .sunset,
@@ -1319,6 +1333,8 @@ enum Levels {
         case 5: return String(localized: "Frost blockers")
         case 7: return String(localized: "Color bombs")
         case 11: return String(localized: "Wrapped specials")
+        case 13: return String(localized: "Fish specials")
+        case 16: return String(localized: "Player Smash meter")
         case 21: return String(localized: "Jelly tiles")
         case 36: return String(localized: "Sugar crates")
         case 51: return String(localized: "Portals")

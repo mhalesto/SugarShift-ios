@@ -118,6 +118,318 @@ struct SugarShiftTests {
         #expect(Engine.swapIfValid(colorBombGrid, Pos(r: 0, c: 0), Pos(r: 0, c: 1)).didSwap)
     }
 
+    @Test func everySpecialPairClassifiesAndCountsAsAPlayableMove() {
+        let specials = Special.allCases
+        var pairCount = 0
+        for firstIndex in specials.indices {
+            for secondIndex in firstIndex..<specials.count {
+                let first = specials[firstIndex]
+                let second = specials[secondIndex]
+                pairCount += 1
+                let kind = Engine.specialComboKind(first, second)
+                #expect(kind != nil)
+                #expect(kind == Engine.specialComboKind(second, first))
+
+                let grid: Grid = [[
+                    Cell(id: "a", color: "A", special: first, kind: .normal),
+                    Cell(id: "b", color: "B", special: second, kind: .normal)
+                ]]
+                let swap = Engine.classifySwap(grid, Pos(r: 0, c: 0), Pos(r: 0, c: 1))
+                #expect(swap != nil)
+                if case .specialCombo(let classifiedKind, _, _, _) = swap?.activation {
+                    #expect(classifiedKind == kind)
+                } else {
+                    Issue.record("special pair did not classify as a combo")
+                }
+                #expect(Engine.hasAnyMoves(grid))
+                #expect(Engine.findHintMove(grid) != nil)
+            }
+        }
+        #expect(pairCount == 21)
+    }
+
+    @Test func pureComboResolverHonorsFootprintsHolesAndConsumedPieces() {
+        func cell(_ r: Int, _ c: Int, color: String = "B", special: Special? = nil) -> Cell {
+            Cell(id: "\(r)-\(c)", color: color, special: special, kind: .normal)
+        }
+        var grid: Grid = (0..<9).map { r in
+            (0..<9).map { c in Optional(cell(r, c)) }
+        }
+        let source = Pos(r: 4, c: 3)
+        let destination = Pos(r: 4, c: 4)
+        grid[source.r][source.c]?.special = .bomb
+        grid[destination.r][destination.c]?.special = .stripedRow
+
+        let lanes = Engine.resolveSpecialCombo(grid,
+                                               kind: .bombStripe,
+                                               first: .bomb,
+                                               second: .stripedRow,
+                                               positions: (source, destination),
+                                               targetColor: nil,
+                                               rankedFishTargets: [],
+                                               bigger: false)
+        #expect(lanes.count == 27)
+        #expect(lanes.allSatisfy { (3...5).contains($0.r) })
+
+        let edgeLanes = Engine.resolveSpecialCombo(grid,
+                                                   kind: .bombStripe,
+                                                   first: .bomb,
+                                                   second: .stripedRow,
+                                                   positions: (Pos(r: 0, c: 0), Pos(r: 0, c: 1)),
+                                                   targetColor: nil,
+                                                   rankedFishTargets: [],
+                                                   bigger: false)
+        #expect(edgeLanes.count == 27)
+        #expect(edgeLanes.allSatisfy { (0...2).contains($0.r) })
+
+        grid[2][2] = nil
+        let all = Engine.resolveSpecialCombo(grid,
+                                             kind: .colorColor,
+                                             first: .colorBomb,
+                                             second: .colorBomb,
+                                             positions: (source, destination),
+                                             targetColor: nil,
+                                             rankedFishTargets: [],
+                                             bigger: false)
+        #expect(all.count == 80)
+        #expect(!all.contains(Pos(r: 2, c: 2)))
+    }
+
+    @Test func specialPlacementPrefersMovedTileAndFallsBackToEligibleCells() {
+        let destination = Pos(r: 0, c: 3)
+        let source = Pos(r: 0, c: 0)
+        let run = [[source, Pos(r: 0, c: 1), Pos(r: 0, c: 2), destination]]
+        #expect(Engine.specialSpawn(from: run,
+                                    preferredPositions: [destination, source])?.position == destination)
+        #expect(Engine.specialSpawn(from: run,
+                                    preferredPositions: [destination, source],
+                                    eligiblePositions: [source, Pos(r: 0, c: 1)])?.position == source)
+
+        let tShape = [
+            [Pos(r: 1, c: 0), Pos(r: 1, c: 1), Pos(r: 1, c: 2)],
+            [Pos(r: 0, c: 1), Pos(r: 1, c: 1), Pos(r: 2, c: 1)]
+        ]
+        #expect(Engine.specialSpawn(from: tShape,
+                                    preferredPositions: [Pos(r: 1, c: 0)])?.position == Pos(r: 1, c: 0))
+    }
+
+    @Test func dropItemsCannotMatchOrBeDeletedBySpecialFootprints() {
+        let ingredient = Pos(r: 0, c: 1)
+        var grid: Grid = [[
+            Cell(id: "a", color: "R", special: nil, kind: .normal),
+            Cell(id: "basket", color: "R", special: nil, kind: .ingredient),
+            Cell(id: "c", color: "R", special: nil, kind: .normal)
+        ]]
+        #expect(Engine.findMatches(grid).isEmpty)
+        let result = Engine.clearMatches(&grid, matches: [ingredient])
+        #expect(result.cleared.isEmpty)
+        #expect(grid[ingredient.r][ingredient.c]?.kind == .ingredient)
+    }
+
+    @Test func comboContractsAreFeasibleAndBossesHaveRealShieldRules() {
+        for level in 1...Levels.count {
+            let config = Levels.config(for: level)
+            if let contract = ComboContract.contract(for: config) {
+                #expect(contract.target > 0)
+                #expect(contract.reward > 0)
+                if contract.kind == .damageBlockers {
+                    #expect(config.layout.blockerCount > 0)
+                }
+            }
+        }
+
+        let boss = GameScene(size: CGSize(width: 390, height: 844))
+        boss.levelConfig = Levels.config(for: 10)
+        boss.configureBossForNewAttempt()
+        #expect(boss.bossShieldRemaining == 2)
+        #expect(!boss.isBossShieldBroken)
+        boss.damageBossShield(by: 2, source: "test")
+        #expect(boss.isBossShieldBroken)
+        #expect(GameScene.smashChargeGain(tilesCleared: 3,
+                                         blockersDamaged: 1,
+                                         specialsTriggered: 1) == 23)
+        #expect(GameScene.smashChargeGain(tilesCleared: 3,
+                                         blockersDamaged: 1,
+                                         specialsTriggered: 1,
+                                         multiplier: 0.5) == 12)
+        #expect(GameScene.smashChargeGain(tilesCleared: 3,
+                                         blockersDamaged: 1,
+                                         specialsTriggered: 1,
+                                         multiplier: 1.3,
+                                         objectiveHits: 2) == 34)
+        #expect(GameScene.smashChargeGain(tilesCleared: 20,
+                                         blockersDamaged: 4,
+                                         specialsTriggered: 3,
+                                         multiplier: 0,
+                                         objectiveHits: 5) == 0)
+        #expect(PlayerSmashTier.tier(for: 49) == nil)
+        #expect(PlayerSmashTier.tier(for: 50) == .focused)
+        #expect(PlayerSmashTier.tier(for: 75) == .cross)
+        #expect(PlayerSmashTier.tier(for: 100) == .mega)
+    }
+
+    @Test func clearPresentationPlansPreserveDirectionalCausality() {
+        let origin = Pos(r: 4, c: 4)
+        let ripple = ClearPresentationPlan(kind: .combo(.colorColor),
+                                           origin: origin,
+                                           secondary: Pos(r: 4, c: 3),
+                                           firstSpecial: .colorBomb,
+                                           secondSpecial: .colorBomb,
+                                           fishTargets: [],
+                                           colorTargets: [])
+        #expect(ripple.delay(for: origin) == 0)
+        #expect(ripple.delay(for: Pos(r: 0, c: 0)) > ripple.delay(for: Pos(r: 3, c: 3)))
+
+        let fishTarget = Pos(r: 1, c: 7)
+        let fish = ClearPresentationPlan(kind: .combo(.fishBomb),
+                                         origin: origin,
+                                         secondary: Pos(r: 4, c: 3),
+                                         firstSpecial: .fish,
+                                         secondSpecial: .bomb,
+                                         fishTargets: [fishTarget],
+                                         colorTargets: [])
+        #expect(fish.delay(for: fishTarget) >= 0.18)
+        #expect(fish.maximumDelay(in: [fishTarget, origin]) >= fish.delay(for: fishTarget))
+    }
+
+    @Test func turnMasteryRewardsAgencyAndMakesCoolingVisible() {
+        let routine = TurnMasteryPolicy.evaluate(
+            flow: 3,
+            intent: .match,
+            tilesCleared: 3,
+            blockersDamaged: 0,
+            specialsTriggered: 0,
+            specialsCreated: 0,
+            objectiveHits: 0,
+            cascadeDepth: 1,
+            scoreEarned: 30)
+        #expect(routine.grade == .routine)
+        #expect(routine.flowAfter == 2)
+        #expect(routine.scoreBonus == 0)
+
+        let objectiveMove = TurnMasteryPolicy.evaluate(
+            flow: 0,
+            intent: .match,
+            tilesCleared: 3,
+            blockersDamaged: 1,
+            specialsTriggered: 0,
+            specialsCreated: 0,
+            objectiveHits: 1,
+            cascadeDepth: 1,
+            scoreEarned: 30)
+        #expect(objectiveMove.grade == .purposeful)
+        #expect(objectiveMove.flowAfter == 1)
+        #expect(objectiveMove.scoreBonus > 0)
+
+        let plannedCombo = TurnMasteryPolicy.evaluate(
+            flow: 1,
+            intent: .specialCombo,
+            tilesCleared: 12,
+            blockersDamaged: 2,
+            specialsTriggered: 2,
+            specialsCreated: 0,
+            objectiveHits: 2,
+            cascadeDepth: 1,
+            scoreEarned: 700)
+        #expect(plannedCombo.grade == .masterful)
+        #expect(plannedCombo.flowAfter == 3)
+        #expect(plannedCombo.chargesSugarRush)
+        #expect(plannedCombo.smashBonus == 8)
+
+        let smash = TurnMasteryPolicy.evaluate(
+            flow: 4,
+            intent: .playerSmash,
+            tilesCleared: 15,
+            blockersDamaged: 3,
+            specialsTriggered: 1,
+            specialsCreated: 0,
+            objectiveHits: 3,
+            cascadeDepth: 2,
+            scoreEarned: 800)
+        #expect(smash.flowAfter == 4)
+        #expect(smash.smashBonus == 0)
+    }
+
+    @Test func sugarRushAndTacticalAnalysisUseThePlayersChosenAnchor() {
+        func cell(_ id: String, _ color: String, blocker: Blocker? = nil) -> Cell {
+            Cell(id: id, color: color, special: nil, kind: .normal, blocker: blocker)
+        }
+        let fullGrid: Grid = (0..<3).map { r in
+            (0..<3).map { c in Optional(cell("\(r)-\(c)", "R")) }
+        }
+        let chosen = Pos(r: 1, c: 1)
+        let rush = Engine.sugarRushResolution(in: fullGrid,
+                                              base: [chosen],
+                                              preferredAnchor: chosen)
+        #expect(rush.anchor == chosen)
+        #expect(rush.positions == Set([
+            Pos(r: 1, c: 0), Pos(r: 1, c: 1), Pos(r: 1, c: 2),
+            Pos(r: 0, c: 1), Pos(r: 2, c: 1)
+        ]))
+
+        let fuse = Pos(r: 0, c: 0)
+        let tacticalGrid: Grid = [
+            [cell("a", "R", blocker: Blocker(type: .countdown, hits: 1, countdown: 1)),
+             cell("b", "G"), cell("c", "R")],
+            [cell("d", "B"), cell("e", "R"), cell("f", "G")],
+            [cell("g", "G"), cell("h", "B"), cell("i", "R")]
+        ]
+        let analysis = TacticalMoveEvaluator.analysis(
+            for: Pos(r: 0, c: 1), Pos(r: 1, c: 1),
+            in: tacticalGrid,
+            config: Levels.config(for: 8))
+        #expect(analysis != nil)
+        #expect(analysis?.affected.contains(fuse) == true)
+        #expect(analysis?.objectivePositions.contains(fuse) == true)
+        #expect(analysis?.hazardPositions.contains(fuse) == true)
+    }
+
+    @Test func precisionSmashOffersTierChoiceAndTruthfulTargeting() {
+        #expect(PlayerSmashTier.available(for: 49).isEmpty)
+        #expect(PlayerSmashTier.available(for: 50) == [.focused])
+        #expect(PlayerSmashTier.available(for: 75) == [.cross, .focused])
+        #expect(PlayerSmashTier.available(for: 100) == [.mega, .cross, .focused])
+        #expect(PlayerSmashTier.nextAvailable(after: .mega, charge: 100) == .cross)
+        #expect(PlayerSmashTier.nextAvailable(after: .cross, charge: 100) == .focused)
+        #expect(PlayerSmashTier.nextAvailable(after: .focused, charge: 100) == nil)
+        #expect(PlayerSmashTier.focused.chargeCost == 50)
+        #expect(PlayerSmashTier.cross.chargeCost == 75)
+        #expect(PlayerSmashTier.mega.chargeCost == 100)
+
+        func cell(_ id: String, blocker: Blocker? = nil) -> Cell {
+            Cell(id: id, color: "R", special: nil, kind: .normal, blocker: blocker)
+        }
+        let fuse = Pos(r: 0, c: 0)
+        let grid: Grid = [
+            [cell("a", blocker: Blocker(type: .countdown, hits: 1, countdown: 1)),
+             cell("b"), cell("c")],
+            [cell("d"), cell("e"), cell("f")],
+            [cell("g"), cell("h"), nil]
+        ]
+        let center = Pos(r: 1, c: 1)
+        #expect(Engine.playerSmashFootprint(in: grid,
+                                           centeredAt: center,
+                                           tier: .focused).count == 8)
+        #expect(Engine.playerSmashFootprint(in: grid,
+                                           centeredAt: center,
+                                           tier: .cross).count == 5)
+        #expect(Engine.playerSmashFootprint(in: grid,
+                                           centeredAt: center,
+                                           tier: .mega).count == 8)
+
+        let smash = TacticalSmashEvaluator.analysis(
+            tier: .focused,
+            centeredAt: center,
+            in: grid,
+            config: Levels.config(for: 8))
+        #expect(smash?.affected.contains(fuse) == true)
+        #expect(smash?.objectivePositions.contains(fuse) == true)
+        #expect(smash?.hazardPositions.contains(fuse) == true)
+        #expect(TacticalSmashEvaluator.bestTarget(tier: .focused,
+                                                  in: grid,
+                                                  config: Levels.config(for: 8))?.center == center)
+    }
+
     @Test func levelCatalogIsValidThroughTwoHundred() {
         #expect(Levels.count >= 200)
         #expect(Levels.config(for: 200).number == 200)
@@ -508,7 +820,7 @@ struct SugarShiftTests {
         #expect(Monetization.rewardedAdSubtitle == "+120 coins")
     }
 
-    @Test(.serialized) func rewardedAdCooldownEscalatesAndResetsEachDay() {
+    @Test func rewardedAdCooldownEscalatesAndResetsEachDay() {
         Persistence.resetDailyAndEventState()
         let calendar = Calendar.current
         let firstWatch = calendar.date(from: DateComponents(year: 2026,
@@ -583,7 +895,7 @@ struct SugarShiftTests {
                                                         alreadyUsed: true))
     }
 
-    @Test(.serialized) func analyticsAggregatesLevelDifficultySignals() {
+    @Test func analyticsAggregatesLevelDifficultySignals() {
         Analytics.resetLevelStats()
         Analytics.track("level_start", properties: ["level": "3", "target": "1200"])
         Analytics.track("booster_use", properties: ["level": "3", "type": "hammer"])
@@ -601,7 +913,7 @@ struct SugarShiftTests {
         #expect(stats["moves_left_total"] == 4)
     }
 
-    @Test(.serialized) func persistenceClampsLevelAndPreservesBestStars() {
+    @Test func persistenceClampsLevelAndPreservesBestStars() {
         Persistence.resetAll()
         Persistence.currentLevel = Levels.count + 50
         #expect(Persistence.currentLevel == Levels.count)
@@ -635,7 +947,7 @@ struct SugarShiftTests {
         #expect(!Persistence.hasDeliveredStoreKitTransaction("tx-test"))
     }
 
-    @Test(.serialized) func backendStateMergesProgressAndPurchaseLedger() {
+    @Test func backendStateMergesProgressAndPurchaseLedger() {
         Persistence.resetAll()
         Persistence.currentLevel = 3
         Persistence.cash = 100
@@ -759,7 +1071,7 @@ struct SugarShiftTests {
         #expect(next[0][0]?.kind == .ingredient)
     }
 
-    @Test(.serialized) func livesRegenAndPiggyAndDoublerWorkEndToEnd() {
+    @Test func livesRegenAndPiggyAndDoublerWorkEndToEnd() {
         Persistence.resetAll()
 
         // Lives: spending a life starts the timer; reading after a delay
@@ -1133,6 +1445,211 @@ struct SugarShiftTests {
         #expect(state.nextLife(after: firstLife, maximum: 5)
                 == firstLife.addingTimeInterval(60))
         #expect(state.nextLife(after: firstLife.addingTimeInterval(120), maximum: 5) == nil)
+    }
+
+    // MARK: - Sugar Tower
+
+    @Test func towerFloorsAreDeterministicAndEscalate() {
+        let week = "2100-W01"
+        let a = TowerMode.floorConfig(weekKey: week, floor: 4, perks: [])
+        let b = TowerMode.floorConfig(weekKey: week, floor: 4, perks: [])
+        #expect(a.moves == b.moves && a.target == b.target && a.rows == b.rows)
+        #expect(a.layout.blockerCount == b.layout.blockerCount)
+        #expect(TowerMode.floorSeed(weekKey: week, floor: 4)
+                == TowerMode.floorSeed(weekKey: week, floor: 4))
+        #expect(TowerMode.floorSeed(weekKey: week, floor: 4)
+                != TowerMode.floorSeed(weekKey: week, floor: 5))
+        #expect(TowerMode.floorSeed(weekKey: "2100-W02", floor: 4)
+                != TowerMode.floorSeed(weekKey: week, floor: 4))
+
+        let early = TowerMode.floorConfig(weekKey: week, floor: 1, perks: [])
+        let late = TowerMode.floorConfig(weekKey: week, floor: 12, perks: [])
+        #expect(late.target > early.target)
+        #expect(late.moves < early.moves)
+        #expect(late.rows >= early.rows && late.colors >= early.colors)
+        #expect(late.layout.blockerCount > 0)
+        // Boosters are locked on every floor; the sentinel routes configs.
+        #expect(early.modifiers.contains(.noBoosters) && late.modifiers.contains(.noBoosters))
+        #expect(early.number == Levels.towerLevel && late.number == Levels.towerLevel)
+
+        let weekKey = TowerMode.weekKey(for: Date(timeIntervalSince1970: 4_102_444_800))
+        #expect(weekKey.count == 8 && weekKey.contains("-W"))
+    }
+
+    @Test func towerPerksShapeTheFloorConfig() {
+        let week = "2100-W01"
+        let plain = TowerMode.floorConfig(weekKey: week, floor: 6, perks: [])
+        let perked = TowerMode.floorConfig(
+            weekKey: week, floor: 6,
+            perks: [.extraMoves, .extraMoves, .startBomb, .sweetSimplicity, .biggerBlasts])
+        #expect(perked.moves == plain.moves + 6)
+        #expect(perked.layout.startingBombs == 1)
+        #expect(perked.colors == max(4, plain.colors - 1))
+        #expect(perked.modifiers.contains(.specialsExplodeBigger))
+        #expect(!plain.modifiers.contains(.specialsExplodeBigger))
+    }
+
+    @Test func towerPerkChoicesAreDeterministicAndDistinct() {
+        let a = TowerMode.perkChoices(weekKey: "2100-W01", floor: 3)
+        let b = TowerMode.perkChoices(weekKey: "2100-W01", floor: 3)
+        #expect(a == b)
+        #expect(a.count == 3 && Set(a).count == 3)
+    }
+
+    @Test func towerCoinRewardScalesWithMilestonesAndGoldRush() {
+        #expect(TowerMode.coinReward(floor: 1, perks: []) == 40)
+        #expect(TowerMode.coinReward(floor: 5, perks: []) == 180)
+        #expect(TowerMode.coinReward(floor: 1, perks: [.goldRush]) == 60)
+    }
+
+    @Test func towerRunPersistsAndEndsWithBestFloor() {
+        let d = UserDefaults.standard
+        let savedBest = Persistence.towerBestFloor
+        let savedRun = TowerMode.activeRun()
+        defer {
+            Persistence.towerBestFloor = savedBest
+            if let savedRun {
+                TowerMode.save(savedRun)
+            } else {
+                d.removeObject(forKey: Persistence.K.towerFloor)
+                d.removeObject(forKey: Persistence.K.towerPerks)
+                d.removeObject(forKey: Persistence.K.towerRunCoins)
+                d.removeObject(forKey: Persistence.K.towerWeek)
+            }
+        }
+
+        var run = TowerMode.startNewRun()
+        #expect(run.floor == 1 && run.perks.isEmpty && run.coinsEarned == 0)
+
+        run.floor = 7
+        run.perks = [.goldRush, .extraMoves]
+        run.coinsEarned = 300
+        TowerMode.save(run)
+        #expect(TowerMode.activeRun() == run)
+
+        Persistence.towerBestFloor = 3
+        TowerMode.endRun(run)
+        #expect(TowerMode.activeRun() == nil)
+        // Floor 7 was in progress, so 6 were cleared — beats the old best of 3.
+        #expect(Persistence.towerBestFloor == 6)
+    }
+
+    // MARK: - Daily missions
+
+    @Test func dailyMissionsAreDeterministicPerDay() {
+        let day = Date(timeIntervalSince1970: 4_102_444_800) // far future, off live data
+        let a = DailyMissions.missions(on: day)
+        let b = DailyMissions.missions(on: day)
+        #expect(a == b)
+        #expect(a.count == DailyMissions.missionsPerDay)
+        #expect(Set(a.map(\.kind)).count == a.count)
+        for mission in a {
+            #expect(mission.target > 0)
+            #expect(mission.rewardCoins > 0)
+        }
+        let nextDay = DailyMissions.missions(on: day.addingTimeInterval(86_400))
+        #expect(Set(a.map(\.id)).isDisjoint(with: nextDay.map(\.id)))
+    }
+
+    @Test func missionContributionsMapEventsToMatchingKinds() {
+        let missions = [
+            DailyMission(id: "t-clearTiles", kind: .clearTiles, target: 100, rewardCoins: 50),
+            DailyMission(id: "t-winLevels", kind: .winLevels, target: 2, rewardCoins: 80),
+            DailyMission(id: "t-earnScore", kind: .earnScore, target: 4_000, rewardCoins: 50)
+        ]
+        let clears = DailyMissions.contributions(for: .tilesCleared(5), missions: missions)
+        #expect(clears.count == 1)
+        #expect(clears.first?.id == "t-clearTiles" && clears.first?.amount == 5)
+
+        let wins = DailyMissions.contributions(for: .levelWon, missions: missions)
+        #expect(wins.count == 1 && wins.first?.id == "t-winLevels")
+
+        // Events with no matching mission today contribute nothing.
+        #expect(DailyMissions.contributions(for: .chainReaction, missions: missions).isEmpty)
+        #expect(DailyMissions.contributions(for: .tilesCleared(0), missions: missions).isEmpty)
+    }
+
+    @Test func missionProgressAccumulatesAndClaimsOnce() {
+        let day = Date(timeIntervalSince1970: 4_102_444_800)
+        defer {
+            UserDefaults.standard.removeObject(forKey: Persistence.K.missionProgress)
+            UserDefaults.standard.removeObject(forKey: Persistence.K.missionClaimed)
+        }
+        guard let mission = DailyMissions.missions(on: day).first else {
+            Issue.record("no missions generated")
+            return
+        }
+        // An earlier test's `resetAll()` may have left the reset lock active,
+        // which zeroes all persistence reads until the next synced write.
+        UserDefaults.standard.set(false, forKey: Persistence.K.resetLockActive)
+        UserDefaults.standard.removeObject(forKey: Persistence.K.missionProgress)
+        UserDefaults.standard.removeObject(forKey: Persistence.K.missionClaimed)
+
+        Persistence.addMissionProgress(id: mission.id, amount: mission.target - 1)
+        #expect(!DailyMissions.isComplete(mission))
+        #expect(DailyMissions.claim(mission) == nil)
+
+        Persistence.addMissionProgress(id: mission.id, amount: 1)
+        #expect(DailyMissions.isComplete(mission))
+
+        let cashBefore = Persistence.cash
+        let coins = DailyMissions.claim(mission)
+        #expect(coins != nil && coins! >= mission.rewardCoins)
+        #expect(Persistence.cash == cashBefore + (coins ?? 0))
+        Persistence.cash = cashBefore
+
+        // Second claim is a no-op.
+        #expect(DailyMissions.claim(mission) == nil)
+
+        // Progress writes for a new day prune the old day's entries.
+        let nextDayMission = DailyMissions.missions(on: day.addingTimeInterval(86_400))[0]
+        Persistence.addMissionProgress(id: nextDayMission.id, amount: 1)
+        #expect(Persistence.missionProgress(id: mission.id) == 0)
+    }
+
+    // MARK: - Turn feedback policy
+
+    @Test func feedbackTiersEscalateWithDepthAndClearSize() {
+        #expect(TurnFeedbackPolicy.tier(depth: 1, cleared: 3) == .match)
+        #expect(TurnFeedbackPolicy.tier(depth: 1, cleared: 4) == .match)
+        #expect(TurnFeedbackPolicy.tier(depth: 2, cleared: 3) == .nice)
+        #expect(TurnFeedbackPolicy.tier(depth: 1, cleared: 5) == .nice)
+        #expect(TurnFeedbackPolicy.tier(depth: 3, cleared: 3) == .big)
+        #expect(TurnFeedbackPolicy.tier(depth: 1, cleared: 7) == .big)
+        #expect(TurnFeedbackPolicy.tier(depth: 4, cleared: 3) == .huge)
+        #expect(TurnFeedbackPolicy.tier(depth: 1, cleared: 9) == .huge)
+        #expect(TurnFeedbackPolicy.tier(depth: 5, cleared: 3) == .epic)
+        #expect(TurnFeedbackPolicy.tier(depth: 1, cleared: 10) == .huge)
+        // The louder of the two axes wins.
+        #expect(TurnFeedbackPolicy.tier(depth: 2, cleared: 10) == .huge)
+    }
+
+    @Test func feedbackChannelsUnlockStrictlyByTier() {
+        // A plain 3-match: no screen-wide channel fires.
+        let match = TurnFeedbackPolicy.feedback(depth: 1, cleared: 3)
+        #expect(!match.showsBanner && !match.showsBeam)
+        #expect(match.shakeIntensity == nil && !match.spawnsConfetti)
+        #expect(match.haptic == .light)
+
+        // A lone bomb (9 tiles in one step) shakes but must not confetti.
+        let bomb = TurnFeedbackPolicy.feedback(depth: 1, cleared: 9)
+        #expect(bomb.showsBanner && !bomb.showsBeam)
+        #expect(bomb.shakeIntensity != nil && !bomb.spawnsConfetti)
+
+        // Confetti stays exclusive to the top tier.
+        for depth in 1...4 {
+            #expect(!TurnFeedbackPolicy.feedback(depth: depth, cleared: 3).spawnsConfetti)
+        }
+        #expect(TurnFeedbackPolicy.feedback(depth: 6, cleared: 3).spawnsConfetti)
+
+        // Each successive tier is at least as loud on every channel.
+        let ordered = (1...5).map { TurnFeedbackPolicy.feedback(depth: $0, cleared: 3) }
+        for (quieter, louder) in zip(ordered, ordered.dropFirst()) {
+            #expect(louder.tier > quieter.tier)
+            #expect((louder.shakeIntensity ?? 0) >= (quieter.shakeIntensity ?? 0))
+            #expect(louder.showsBanner || !quieter.showsBanner)
+            #expect(!louder.showsBeam)
+        }
     }
 
 }

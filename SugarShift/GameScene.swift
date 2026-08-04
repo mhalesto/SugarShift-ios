@@ -17,23 +17,21 @@ final class GameScene: SKScene {
     var cascadeBoostForLevel: Double {
         let rangeBase: Double
         switch levelNumber {
-        case 1...5:     rangeBase = 0.24
-        case 6...10:    rangeBase = 0.20
-        case 11...15:   rangeBase = 0.16
-        case 16...20:   rangeBase = 0.13
-        case 21...25:   rangeBase = 0.10
-        case 26...50:   rangeBase = 0.08
-        case 51...100:  rangeBase = 0.06
-        case 101...150: rangeBase = 0.05
-        default:        rangeBase = 0.04
+        case 1...5:     rangeBase = 0.12
+        case 6...10:    rangeBase = 0.10
+        case 11...25:   rangeBase = 0.07
+        case 26...50:   rangeBase = 0.05
+        case 51...100:  rangeBase = 0.035
+        case 101...150: rangeBase = 0.025
+        default:        rangeBase = 0.02
         }
 
         let archetypeBoost: Double
         switch levelConfig.archetype {
-        case .starter: archetypeBoost = 0.02
-        case .combo: archetypeBoost = 0.03
-        case .bombRush: archetypeBoost = 0.02
-        case .crowded: archetypeBoost = 0.01
+        case .starter: archetypeBoost = 0.01
+        case .combo: archetypeBoost = 0.02
+        case .bombRush: archetypeBoost = 0.01
+        case .crowded: archetypeBoost = 0.005
         case .ice, .lock, .finale: archetypeBoost = 0
         }
 
@@ -45,7 +43,9 @@ final class GameScene: SKScene {
         case .crownChallenge: difficultyDrag = 0.06
         }
 
-        return min(0.30, max(0, rangeBase + archetypeBoost - difficultyDrag))
+        let failCount = Analytics.levelStats(for: levelNumber)["fails"] ?? 0
+        let earnedAssist: Double = failCount >= 4 ? 0.07 : (failCount >= 2 ? 0.035 : 0)
+        return min(0.20, max(0, rangeBase + archetypeBoost + earnedAssist - difficultyDrag))
     }
 
     /// Boost only applies for the first few automatic cascades; after that we
@@ -108,7 +108,20 @@ final class GameScene: SKScene {
     var dragStartPoint: CGPoint?
     var isResolving = false
     var cascadeDepth = 0
+    /// Once a deep cascade crosses the confetti threshold, every later step
+    /// crosses it too; this keeps one chain from stacking emitters.
+    var lastConfettiAt: TimeInterval = 0
+    /// The destination tile of the player's latest swap is preferred when the
+    /// first cascade creates a special, making placement intentional instead of
+    /// always choosing the geometric middle of the match.
+    var preferredSpecialSpawnPositions: [Pos] = []
     var levelAttemptSeed = LevelSeed.make(level: 1)
+    #if DEBUG
+    /// One-shot seed override for the next `startNewGame()` — the tester
+    /// overlay's "Replay seed" entry. Paste the `seed` value logged in
+    /// `level_start` analytics to relaunch that exact opening board.
+    var debugReplaySeed: UInt64?
+    #endif
     var gameplayRNG = SeededRandomNumberGenerator(seed: LevelSeed.make(level: 1, salt: 0x51F7))
     /// True when this attempt is today's daily challenge. The board comes from
     /// the shared date seed (identical for every player worldwide), and the
@@ -164,6 +177,10 @@ final class GameScene: SKScene {
     var storeKitDeliveryObserver: NSObjectProtocol?
     var storeKitProductObserver: NSObjectProtocol?
     var levelTesterOverlay: SKNode?
+    /// Active Sugar Tower run when this scene is playing a tower floor
+    /// (`levelNumber == Levels.towerLevel`); nil for every other mode.
+    var towerRun: TowerRun?
+    var towerOverlay: SKNode?
     var preLevelPerkOverlay: SKNode?
     var preLevelPerkApplied = false
     enum PreLevelPerk: String {
@@ -184,6 +201,7 @@ final class GameScene: SKScene {
     var maxCascadeDepth = 0
     var totalCascadeClears = 0
     var objectiveCompletionShown = false
+    var mercySpecialGrantedThisAttempt = false
 
     // MARK: - Mastery medals tracking
     /// Flipped to true whenever the player spends a paid booster or burns a
@@ -216,28 +234,72 @@ final class GameScene: SKScene {
         let chainTilesCleared: Int
         let chainSpecialsTriggered: Int
         let chainBlockersDamaged: Int
+        let chainObjectiveHits: Int
         let lastChainTierFired: Int
+        let smashCharge: Int
+        let smashTargeting: Bool
+        let selectedSmashTier: PlayerSmashTier?
+        let comboContractProgress: Int
+        let comboContractCompleted: Bool
+        let bossShieldRemaining: Int
+        let bossTurnsUntilPressure: Int
         let chocolateDamagedThisTurn: Bool
         let syrupRow: Int
         let syrupMovesSinceTick: Int
         let sugarRushCharged: Bool
+        let mercySpecialGrantedThisAttempt: Bool
+        let flowLevel: Int
+        let bestFlowLevel: Int
     }
     var undoSnapshot: UndoSnapshot?
     var freeUndoUsedThisLevel = false
     weak var undoButton: SKNode?
     weak var undoBadge: SKLabelNode?
 
-    // MARK: - Combo meter (per-swap cascade chain)
-    /// Accumulated cleared tiles within the current chain — resets at the start
-    /// of every player swap. Drives the on-screen meter and milestone juice.
+    // MARK: - Combo / Smash systems
+    /// Per-turn chain statistics feed one shared value formula. `smashCharge`
+    /// persists across turns so strong play builds toward a player-timed move.
     var chainTilesCleared = 0
     var chainSpecialsTriggered = 0
     var chainBlockersDamaged = 0
+    var chainObjectiveHits = 0
+    var turnCreatedSpecials = 0
+    var turnIntent: TurnIntent = .match
+    var turnScoreAtStart = 0
+    var turnPrimaryAnchor: Pos?
+    var flowLevel = 0
+    var bestFlowLevel = 0
     var lastChainTierFired = 0
+    static let smashChargeMaximum = 100
+    static func smashChargeGain(tilesCleared: Int,
+                                blockersDamaged: Int,
+                                specialsTriggered: Int,
+                                multiplier: Double = 1.0,
+                                objectiveHits: Int = 0) -> Int {
+        let base = max(0, tilesCleared) * 2
+            + max(0, blockersDamaged) * 5
+            + max(0, specialsTriggered) * 12
+        let credit = max(0, multiplier)
+        guard credit > 0 else { return 0 }
+        return max(0, Int((Double(base) * credit).rounded()))
+            + min(12, max(0, objectiveHits) * 2)
+    }
+    var smashCharge = 0
+    var smashTargeting = false
+    var selectedSmashTier: PlayerSmashTier?
     var sugarRushCharged = false
+    var comboContractProgress = 0
+    var comboContractCompleted = false
+    var bossShieldRemaining = 0
+    var bossShieldMaximum = 0
+    var bossTurnsUntilPressure = 0
+    var turnConsumesMove = false
+    var bossDamageAppliedThisTurn = false
     weak var comboMeterFill: SKShapeNode?
     weak var comboMeterTrack: SKShapeNode?
     weak var comboMeterLabel: SKLabelNode?
+    weak var comboMeterCaption: SKLabelNode?
+    weak var flowMeterLabel: SKLabelNode?
 
     // MARK: - Syrup line (rising pressure mechanic)
     /// Row index of the next tile-row that will get coated when the syrup tick
@@ -250,6 +312,8 @@ final class GameScene: SKScene {
     var ghostNodes: [SKNode] = []
     var specialPreviewNodes: [SKNode] = []
     var ghostTarget: Pos?
+    var smashPreviewNodes: [SKNode] = []
+    var smashPreviewTarget: Pos?
 
     // Container for shake (we move this instead of self.position)
     var worldNode: SKNode!
@@ -324,6 +388,7 @@ final class GameScene: SKScene {
     override func didChangeSize(_ oldSize: CGSize) {
         super.didChangeSize(oldSize)
         guard size.width > 0, !grid.isEmpty else { return }
+        clearPlayerSmashPreview()
         rebuildChapterBackdrop()
         rebuildHUD()
         layoutBoard()
@@ -380,8 +445,9 @@ final class GameScene: SKScene {
 
     // MARK: - Combo / momentum meter
 
-    /// Score-style thresholds for the chain meter. Each tier escalates the
-    /// player-facing feedback (color, haptic, screen tint, time-dilation).
+    /// Persistent Smash thresholds. The exact same value drives the visible
+    /// meter and milestone feedback, avoiding the old mismatch where specials
+    /// counted for tiers but not for the bar.
     struct ComboTier {
         let count: Int
         let label: String
@@ -389,10 +455,10 @@ final class GameScene: SKScene {
     }
 
     static let comboTiers: [ComboTier] = [
-        ComboTier(count: 5,  label: "NICE!",       color: UIColor(hex: "#FACC15")),
-        ComboTier(count: 9,  label: "COMBO!",      color: UIColor(hex: "#FB923C")),
-        ComboTier(count: 14, label: "SUGAR RUSH!", color: UIColor(hex: "#EC4899")),
-        ComboTier(count: 20, label: "UNREAL!",     color: UIColor(hex: "#A855F7"))
+        ComboTier(count: 25,  label: "NICE!",        color: UIColor(hex: "#FACC15")),
+        ComboTier(count: 50,  label: "COMBO!",       color: UIColor(hex: "#FB923C")),
+        ComboTier(count: 75,  label: "ALMOST READY!", color: UIColor(hex: "#EC4899")),
+        ComboTier(count: 100, label: "SMASH READY!",  color: UIColor(hex: "#A855F7"))
     ]
 
     var comboMeterContainer: SKNode? { comboMeterTrack?.parent }
@@ -403,6 +469,7 @@ final class GameScene: SKScene {
         let headerH: CGFloat = 170
         let headerBottom = size.height / 2 - safeTop - 8 - headerH
         let container = SKNode()
+        container.name = "smashMeterButton"
         container.position = CGPoint(x: 0, y: headerBottom - 16)
         container.zPosition = 58
         container.alpha = 0
@@ -411,6 +478,7 @@ final class GameScene: SKScene {
         let trackW: CGFloat = GameScene.comboMeterTrackWidth
         let trackH: CGFloat = 14
         let track = SKShapeNode(rectOf: CGSize(width: trackW, height: trackH), cornerRadius: trackH / 2)
+        track.name = "smashMeterButton"
         track.fillColor = UIColor(white: 0, alpha: 0.45)
         track.strokeColor = UIColor.white.withAlphaComponent(0.45)
         track.lineWidth = 1
@@ -420,6 +488,7 @@ final class GameScene: SKScene {
         let innerW = trackW - 4
         let innerH = trackH - 4
         let fill = SKShapeNode(rectOf: CGSize(width: innerW, height: innerH), cornerRadius: innerH / 2)
+        fill.name = "smashMeterButton"
         fill.fillColor = UIColor(hex: "#FACC15")
         fill.strokeColor = .clear
         fill.position = CGPoint(x: -innerW / 2, y: 0)
@@ -428,6 +497,7 @@ final class GameScene: SKScene {
         comboMeterFill = fill
 
         let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        label.name = "smashMeterButton"
         label.fontSize = 9.5
         label.fontColor = .white
         label.text = "0"
@@ -435,15 +505,34 @@ final class GameScene: SKScene {
         label.horizontalAlignmentMode = .center
         container.addChild(label)
         comboMeterLabel = label
+
+        let caption = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+        caption.name = "smashMeterButton"
+        caption.fontSize = 9
+        caption.fontColor = .white
+        caption.verticalAlignmentMode = .center
+        caption.horizontalAlignmentMode = .center
+        caption.position = CGPoint(x: 0, y: -15)
+        container.addChild(caption)
+        comboMeterCaption = caption
+
+        let flow = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        flow.fontSize = 9.5
+        flow.fontColor = UIColor(hex: "#FDE68A")
+        flow.verticalAlignmentMode = .center
+        flow.horizontalAlignmentMode = .center
+        flow.position = CGPoint(x: 0, y: 17)
+        flow.alpha = 0
+        container.addChild(flow)
+        flowMeterLabel = flow
     }
 
     func updateComboMeter() {
         guard let fill = comboMeterFill,
               let label = comboMeterLabel,
               let container = comboMeterContainer else { return }
-        let chain = chainTilesCleared
-        let topTier = GameScene.comboTiers.last?.count ?? 20
-        let frac = max(0, min(1.0, CGFloat(chain) / CGFloat(topTier)))
+        let charge = max(0, min(GameScene.smashChargeMaximum, smashCharge))
+        let frac = CGFloat(charge) / CGFloat(GameScene.smashChargeMaximum)
         let innerW = GameScene.comboMeterTrackWidth - 4
         fill.removeAllActions()
         fill.run(.scaleX(to: max(0.0001, frac), duration: 0.12))
@@ -451,19 +540,72 @@ final class GameScene: SKScene {
 
         // Pick the highest tier we've reached for color
         var tierColor = UIColor(hex: "#FACC15")
-        for tier in GameScene.comboTiers where chain >= tier.count {
+        for tier in GameScene.comboTiers where charge >= tier.count {
             tierColor = tier.color
         }
         fill.fillColor = tierColor
-        label.text = chain > 0 ? "\(chain)" : ""
-        container.alpha = chain >= 3 ? 1.0 : 0.0
+        if sugarRushCharged {
+            comboMeterTrack?.strokeColor = UIColor(hex: "#EC4899")
+            comboMeterTrack?.glowWidth = 5
+            flowMeterLabel?.text = String(localized: "SUGAR RUSH READY")
+                + (flowLevel > 0 ? " • " + String(localized: "FLOW \(flowLevel)/\(TurnMasteryPolicy.maximumFlow)") : "")
+            flowMeterLabel?.fontColor = UIColor(hex: "#F9A8D4")
+            flowMeterLabel?.alpha = 1
+        } else if flowLevel > 0 {
+            comboMeterTrack?.strokeColor = UIColor.white.withAlphaComponent(0.55)
+            comboMeterTrack?.glowWidth = 0
+            flowMeterLabel?.text = String(localized: "FLOW \(flowLevel)/\(TurnMasteryPolicy.maximumFlow)")
+            flowMeterLabel?.fontColor = UIColor(hex: "#FDE68A")
+            flowMeterLabel?.alpha = 1
+        } else {
+            comboMeterTrack?.strokeColor = UIColor.white.withAlphaComponent(0.45)
+            comboMeterTrack?.glowWidth = 0
+            flowMeterLabel?.text = nil
+            flowMeterLabel?.alpha = 0
+        }
+        if smashTargeting, let tier = selectedSmashTier {
+            label.text = tier.compactTitle
+        } else if let tier = PlayerSmashTier.tier(for: charge) {
+            label.text = tier.compactTitle
+        } else {
+            label.text = "\(charge)%"
+        }
+        if smashTargeting {
+            comboMeterCaption?.text = smashPreviewTarget == nil
+                ? String(localized: "TAP A TILE")
+                : String(localized: "TAP AGAIN TO SMASH")
+        } else if let tier = PlayerSmashTier.tier(for: charge) {
+            switch tier {
+            case .focused: comboMeterCaption?.text = String(localized: "TAP FOR BURST")
+            case .cross: comboMeterCaption?.text = String(localized: "TAP FOR CROSS")
+            case .mega: comboMeterCaption?.text = String(localized: "TAP FOR MEGA")
+            }
+        } else if levelConfig.isBoss {
+            comboMeterCaption?.text = bossShieldRemaining > 0
+                ? String(localized: "CROWN \(bossShieldRemaining)/\(bossShieldMaximum)")
+                : String(localized: "CROWN BROKEN")
+        } else if let contract = activeComboContract {
+            comboMeterCaption?.text = comboContractCompleted
+                ? String(localized: "BONUS COMPLETE")
+                : String(localized: "BONUS \(min(comboContractProgress, contract.target))/\(contract.target)")
+        } else {
+            comboMeterCaption?.text = String(localized: "SMASH")
+        }
+        container.alpha = charge > 0 || smashTargeting || flowLevel > 0 || sugarRushCharged ? 1.0 : 0.42
+        container.setScale(smashTargeting ? 1.08 : 1.0)
     }
 
     func resetComboMeter() {
         chainTilesCleared = 0
         chainSpecialsTriggered = 0
         chainBlockersDamaged = 0
+        chainObjectiveHits = 0
+        turnCreatedSpecials = 0
         lastChainTierFired = 0
+        smashCharge = 0
+        smashTargeting = false
+        selectedSmashTier = nil
+        clearPlayerSmashPreview()
         updateComboMeter()
     }
 
@@ -485,22 +627,27 @@ final class GameScene: SKScene {
     /// of visual + haptic feedback if a milestone was crossed.
     func recordChainProgress(tilesCleared: Int,
                                      blockersDamaged: Int,
-                                     specialsTriggered: Int) {
+                                     specialsTriggered: Int,
+                                     chargeMultiplier: Double = 1.0,
+                                     objectiveHits: Int = 0) {
         chainTilesCleared += tilesCleared
         chainBlockersDamaged += blockersDamaged
         chainSpecialsTriggered += specialsTriggered
-        let chain = chainTilesCleared + chainSpecialsTriggered * 4
-        var newTier = lastChainTierFired
-        for (index, tier) in GameScene.comboTiers.enumerated() {
-            if chain >= tier.count && (index + 1) > lastChainTierFired {
-                newTier = index + 1
-            }
+        chainObjectiveHits += objectiveHits
+        var missionEvents: [DailyMissions.Event] = [.tilesCleared(tilesCleared)]
+        if specialsTriggered > 0 {
+            missionEvents.append(.specialsTriggered(specialsTriggered))
         }
-        if newTier > lastChainTierFired {
-            lastChainTierFired = newTier
-            fireComboTier(newTier - 1)
-        }
-        updateComboMeter()
+        DailyMissions.record(missionEvents)
+        let gain = GameScene.smashChargeGain(tilesCleared: tilesCleared,
+                                             blockersDamaged: blockersDamaged,
+                                             specialsTriggered: specialsTriggered,
+                                             multiplier: chargeMultiplier,
+                                             objectiveHits: objectiveHits)
+        addSmashCharge(gain, source: "chain")
+        updateComboContract(tilesCleared: tilesCleared,
+                            blockersDamaged: blockersDamaged,
+                            specialsTriggered: specialsTriggered)
     }
 
     func fireComboTier(_ index: Int) {
@@ -691,11 +838,22 @@ final class GameScene: SKScene {
                                      chainTilesCleared: chainTilesCleared,
                                      chainSpecialsTriggered: chainSpecialsTriggered,
                                      chainBlockersDamaged: chainBlockersDamaged,
+                                     chainObjectiveHits: chainObjectiveHits,
                                      lastChainTierFired: lastChainTierFired,
+                                     smashCharge: smashCharge,
+                                     smashTargeting: smashTargeting,
+                                     selectedSmashTier: selectedSmashTier,
+                                     comboContractProgress: comboContractProgress,
+                                     comboContractCompleted: comboContractCompleted,
+                                     bossShieldRemaining: bossShieldRemaining,
+                                     bossTurnsUntilPressure: bossTurnsUntilPressure,
                                      chocolateDamagedThisTurn: chocolateDamagedThisTurn,
                                      syrupRow: syrupRow,
                                      syrupMovesSinceTick: syrupMovesSinceTick,
-                                     sugarRushCharged: sugarRushCharged)
+                                     sugarRushCharged: sugarRushCharged,
+                                     mercySpecialGrantedThisAttempt: mercySpecialGrantedThisAttempt,
+                                     flowLevel: flowLevel,
+                                     bestFlowLevel: bestFlowLevel)
         refreshUndoButton()
     }
 
@@ -759,11 +917,25 @@ final class GameScene: SKScene {
         chainTilesCleared = snapshot.chainTilesCleared
         chainSpecialsTriggered = snapshot.chainSpecialsTriggered
         chainBlockersDamaged = snapshot.chainBlockersDamaged
+        chainObjectiveHits = snapshot.chainObjectiveHits
         lastChainTierFired = snapshot.lastChainTierFired
+        smashCharge = snapshot.smashCharge
+        smashTargeting = snapshot.smashTargeting
+        selectedSmashTier = snapshot.selectedSmashTier
+        comboContractProgress = snapshot.comboContractProgress
+        comboContractCompleted = snapshot.comboContractCompleted
+        bossShieldRemaining = snapshot.bossShieldRemaining
+        bossTurnsUntilPressure = snapshot.bossTurnsUntilPressure
         chocolateDamagedThisTurn = snapshot.chocolateDamagedThisTurn
         syrupRow = snapshot.syrupRow
         syrupMovesSinceTick = snapshot.syrupMovesSinceTick
         sugarRushCharged = snapshot.sugarRushCharged
+        mercySpecialGrantedThisAttempt = snapshot.mercySpecialGrantedThisAttempt
+        flowLevel = snapshot.flowLevel
+        bestFlowLevel = snapshot.bestFlowLevel
+        turnCreatedSpecials = 0
+        turnPrimaryAnchor = nil
+        turnScoreAtStart = score
         rebuildAllNodes()
         rebuildSyrupBand()
         updateComboMeter()
@@ -1095,6 +1267,7 @@ final class GameScene: SKScene {
         maxCascadeDepth = 0
         totalCascadeClears = 0
         objectiveCompletionShown = false
+        mercySpecialGrantedThisAttempt = false
         hintShownThisLevel = 0
         freeStuckReshufflesThisLevel = 0
         pendingLifeLoss = false
@@ -1106,20 +1279,50 @@ final class GameScene: SKScene {
         chainTilesCleared = 0
         chainSpecialsTriggered = 0
         chainBlockersDamaged = 0
+        chainObjectiveHits = 0
+        turnCreatedSpecials = 0
+        turnIntent = .match
+        turnScoreAtStart = 0
+        turnPrimaryAnchor = nil
+        flowLevel = 0
+        bestFlowLevel = 0
         lastChainTierFired = 0
+        smashCharge = 0
+        smashTargeting = false
+        selectedSmashTier = nil
         sugarRushCharged = false
+        comboContractProgress = 0
+        comboContractCompleted = false
+        configureBossForNewAttempt()
+        turnConsumesMove = false
+        bossDamageAppliedThisTurn = false
+        preferredSpecialSpawnPositions.removeAll()
         preLevelPerkApplied = false
         preLevelPerkOverlay?.removeFromParent()
         preLevelPerkOverlay = nil
         clearGhostPreview()
+        clearPlayerSmashPreview()
         resetSyrupForLevel()
         resetComboMeter()
         refreshUndoButton()
         let usefulMoveScore = openingMoveQualityTarget()
         dailyChallengeRun = initialDailyChallenge
         isDailyChallengeRun = dailyChallengeRun != nil
-        let requestedSeed = dailyChallengeRun?.seed
+        towerRun = levelNumber == Levels.towerLevel
+            ? (TowerMode.activeRun() ?? TowerMode.startNewRun())
+            : nil
+        var requestedSeed = dailyChallengeRun?.seed
             ?? LevelSeed.liveAttempt(level: levelNumber)
+        if let run = towerRun {
+            // Weekly shared boards — every player climbs the same tower.
+            requestedSeed = TowerMode.floorSeed(weekKey: run.weekKey, floor: run.floor)
+        }
+        #if DEBUG
+        if let replay = debugReplaySeed {
+            requestedSeed = replay
+            debugReplaySeed = nil
+        }
+        #endif
         let board = LevelBoardFactory.makeInitialBoard(config: levelConfig,
                                                        seed: requestedSeed,
                                                        minimumOpeningMoveScore: usefulMoveScore,
@@ -1137,12 +1340,26 @@ final class GameScene: SKScene {
                                      "goal": "\(levelConfig.goal.title)",
                                      "difficulty": levelConfig.difficulty.rawValue,
                                      "modifiers": levelConfig.modifiers.map(\.rawValue).joined(separator: ","),
+                                     "combo_contract": activeComboContract?.kind.rawValue ?? "none",
+                                     "combo_contract_target": "\(activeComboContract?.target ?? 0)",
+                                     "boss_shield": "\(bossShieldMaximum)",
                                      "seed": "\(levelAttemptSeed)",
                                      "opening_move_score": "\(board.openingMoveScore)"])
         showLevelIntroHints()
+        showComboContractIntroIfNeeded()
         if isDailyChallengeRun {
             showTeachingToast(key: "daily_shared_board",
                               text: String(localized: "Daily Challenge — every player gets this exact board!"))
+        } else if let run = towerRun {
+            // Tower boards are also shared (weekly), so no per-player board
+            // mutations. Drafted perks apply instead.
+            Effects.showComboBanner(text: String(localized: "FLOOR \(run.floor)"),
+                                    color: UIColor(hex: "#A855F7"),
+                                    in: self)
+            let headStacks = run.perks.filter { $0 == .headStart }.count
+            if headStacks > 0 {
+                addSmashCharge(min(100, 40 * headStacks), source: "tower_perk")
+            }
         } else {
             // The daily board must stay byte-identical for everyone, so the
             // per-player perk and assist mutations only run on campaign attempts.
@@ -1190,6 +1407,10 @@ final class GameScene: SKScene {
             showGuidedMoveHint(delay: 1.1, reason: "wrapped_intro")
         case 12:
             showTeachingToast(key: "booster_intro", text: String(localized: "Use boosters when one move can save the board."))
+        case 13:
+            showTeachingToast(key: "fish_intro", text: String(localized: "Make a 2x2 square to create a goal-seeking fish."))
+        case 16:
+            showTeachingToast(key: "smash_intro", text: String(localized: "Build Smash to 50 for a burst, 75 for a cross, or 100 for a mega smash."))
         case 21:
             showTeachingToast(key: "jelly_intro_level", text: String(localized: "Jelly clears only when you match on top."))
             showGuidedMoveHint(delay: 1.1, reason: "jelly_intro")
@@ -1236,7 +1457,7 @@ final class GameScene: SKScene {
         case .stripedRow, .stripedCol:
             showTeachingToast(key: "striped_created", text: String(localized: "Swap stripes into a match to clear a line."))
         case .wrapped:
-            showTeachingToast(key: "wrapped_created", text: String(localized: "Wrapped candy clears a 3x3 blast."))
+            showTeachingToast(key: "wrapped_created", text: String(localized: "Wrapped candy clears a 5x5 blast."))
         case .colorBomb:
             showTeachingToast(key: "color_bomb_created", text: String(localized: "Swap a color bomb with any candy."))
         case .bomb:

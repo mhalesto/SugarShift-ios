@@ -18,6 +18,10 @@ extension GameScene {
     }
 
     var isLevelGoalComplete: Bool {
+        isPrimaryGoalComplete && isBossShieldBroken
+    }
+
+    var isPrimaryGoalComplete: Bool {
         switch levelConfig.goal {
         case .score:
             return score >= scoreTarget
@@ -41,6 +45,9 @@ extension GameScene {
     }
 
     func failureFeedback() -> String {
+        if levelConfig.isBoss, isPrimaryGoalComplete, bossShieldRemaining > 0 {
+            return String(localized: "The crown needs \(bossShieldRemaining) more smash hits.")
+        }
         switch levelConfig.goal {
         case .score:
             return "You were \(max(0, scoreTarget - score)) points short."
@@ -90,6 +97,9 @@ extension GameScene {
     }
 
     func endLevelTargetText() -> String {
+        if levelConfig.isBoss, bossShieldRemaining > 0 {
+            return String(localized: "Goal + break crown shield")
+        }
         if case .score = levelConfig.goal {
             return "Target  \(scoreTarget)"
         }
@@ -97,11 +107,20 @@ extension GameScene {
     }
 
     func showObjectiveCompleteIfNeeded() {
-        guard !objectiveCompletionShown, isLevelGoalComplete else { return }
+        guard !objectiveCompletionShown, isPrimaryGoalComplete else { return }
         objectiveCompletionShown = true
-        Effects.showComboBanner(text: String(localized: "OBJECTIVE CLEAR!"),
-                                color: UIColor(hex: "#34D399"),
+        let needsFinalSmash = levelConfig.isBoss && bossShieldRemaining > 0
+        Effects.showComboBanner(text: needsFinalSmash
+                                    ? String(localized: "FINAL SMASH!")
+                                    : String(localized: "OBJECTIVE CLEAR!"),
+                                color: needsFinalSmash ? UIColor(hex: "#FACC15") : UIColor(hex: "#34D399"),
                                 in: self)
+        if needsFinalSmash {
+            showStatusToast(String(localized: "Break the crown with specials or Smash"))
+            Analytics.track("boss_final_smash_started",
+                            properties: ["level": "\(levelNumber)",
+                                         "shield": "\(bossShieldRemaining)"])
+        }
         Effects.notify(.success)
         Audio.shared.play(.combo(depth: 3))
     }
@@ -234,6 +253,15 @@ extension GameScene {
         levelEnded = true
         isResolving = true
         clearGhostPreview()
+        clearPlayerSmashPreview()
+
+        // Tower floors bypass the campaign end card entirely: a win drafts a
+        // perk and climbs, a loss ends the whole run. No stars, no lives, no
+        // continue — the roguelite stakes are the mode.
+        if towerRun != nil {
+            endTowerFloor(won: won)
+            return
+        }
 
         let starMovesLeft = moveBonus?.moves ?? max(0, movesLeft)
         let stars = LevelScoring.stars(for: levelConfig,
@@ -248,6 +276,7 @@ extension GameScene {
         if won {
             pendingLifeLoss = false
             totalScore += score
+            DailyMissions.record([.levelWon])
             Persistence.recordStars(stars, for: levelNumber)
             grantStarMilestoneRewardIfDue()
             earnedMedals = computeMedals(effectiveMovesLeft: starMovesLeft)
@@ -299,17 +328,27 @@ extension GameScene {
                                      "moves_left": "\(movesLeft)",
                                      "stars": "\(stars)",
                                      "goal": levelConfig.goal.title,
+                                     "combo_contract": activeComboContract?.kind.rawValue ?? "none",
+                                     "combo_contract_progress": "\(comboContractProgress)",
+                                     "combo_contract_complete": "\(comboContractCompleted)",
+                                     "boss_shield_remaining": "\(bossShieldRemaining)",
+                                     "best_flow": "\(bestFlowLevel)",
                                      "goal_progress": goalProgressText()])
 
+        let comboBonusSummary: [String] = comboContractCompleted
+            ? [String(localized: "Combo bonus +\(activeComboContract?.reward ?? 0)")]
+            : []
         let breakdown = EndLevelCard.Breakdown(
             score: score,
             moveBonus: moveBonus,
             objective: levelConfig.goal.title,
             rewards: rewardResult.general.map(\.summary).filter { !$0.isEmpty }
                 + rewardResult.daily.map(\.summary).filter { !$0.isEmpty }
-                + rewardResult.event.map(\.summary).filter { !$0.isEmpty },
+                + rewardResult.event.map(\.summary).filter { !$0.isEmpty }
+                + comboBonusSummary,
             threeStarReward: rewardResult.threeStar?.summary,
-            newUnlock: Levels.mechanicUnlock(for: min(levelNumber + 1, Levels.count))
+            newUnlock: Levels.mechanicUnlock(for: min(levelNumber + 1, Levels.count)),
+            comboSummary: String(localized: "Best chain x\(maxCascadeDepth)  •  Flow \(bestFlowLevel)  •  \(createdSpecials) made  •  \(detonatedBombs) bombs")
         )
         let existingRating = Persistence.ratingForLevel(levelNumber)
         let displayedMedals = won
@@ -473,6 +512,8 @@ extension GameScene {
                             properties: ["level": "\(levelNumber)",
                                          "score": "\(score)",
                                          "target": "\(scoreTarget)",
+                                         "combo_contract_progress": "\(comboContractProgress)",
+                                         "boss_shield_remaining": "\(bossShieldRemaining)",
                                          "moves_left": "\(movesLeft)"])
         }
     }
@@ -622,6 +663,7 @@ extension GameScene {
         guard scoreEarned > 0 else { return }
         let portion = max(1, scoreEarned / 100)
         Persistence.addToPiggy(portion)
+        DailyMissions.record([.scoreEarned(scoreEarned)])
     }
 
     func awardCascadeCoinBonus(depth: Int, cleared: Int, at point: CGPoint) {

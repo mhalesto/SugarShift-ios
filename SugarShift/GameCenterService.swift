@@ -24,6 +24,9 @@ final class GameCenterService {
         /// that resets daily — everyone plays the identical seeded board, so
         /// scores are directly comparable within a day.
         case dailyScore = "com.currenttech.SugarShift.lb.dailyScore"
+        /// Best Sugar Tower floor cleared. The tower reseeds weekly, so a
+        /// weekly-recurring leaderboard is the natural configuration.
+        case towerFloor = "com.currenttech.SugarShift.lb.towerFloor"
     }
 
     enum Achievement: String, CaseIterable {
@@ -102,6 +105,20 @@ final class GameCenterService {
 
     /// Score for today's shared daily board. The challenge number rides along
     /// as the GameKit context so a score can be tied back to its puzzle.
+    func submitTowerBestFloor(_ floor: Int) {
+        guard isAuthenticated, floor > 0 else { return }
+        GKLeaderboard.submitScore(floor,
+                                  context: 0,
+                                  player: GKLocalPlayer.local,
+                                  leaderboardIDs: [Leaderboard.towerFloor.rawValue]) { error in
+            if let error {
+                Analytics.track("gamecenter_score_failed",
+                                properties: ["board": Leaderboard.towerFloor.rawValue,
+                                             "error": "\(error)"])
+            }
+        }
+    }
+
     func submitDailyScore(_ score: Int, challengeNumber: Int) {
         guard isAuthenticated else { return }
         GKLeaderboard.submitScore(score,

@@ -5,6 +5,12 @@ import UIKit
 /// scene just calls Effects.showX(in: self, …) and gets out of the way.
 enum Effects {
     private static var textureCache: [String: SKTexture] = [:]
+    private static let softHaptic = UIImpactFeedbackGenerator(style: .soft)
+    private static let lightHaptic = UIImpactFeedbackGenerator(style: .light)
+    private static let mediumHaptic = UIImpactFeedbackGenerator(style: .medium)
+    private static let heavyHaptic = UIImpactFeedbackGenerator(style: .heavy)
+    private static let rigidHaptic = UIImpactFeedbackGenerator(style: .rigid)
+    private static let notificationHaptic = UINotificationFeedbackGenerator()
 
     // MARK: - Combo phrases
 
@@ -75,6 +81,9 @@ enum Effects {
         container.zPosition = 900
         container.alpha = 0
         container.setScale(0.3)
+        let majorKeywords = ["BOARD", "SMASH", "CROWN", "SUGAR", "UNREAL", "MEGA", "RAINBOW", "SUPER"]
+        let isMajor = majorKeywords.contains { text.localizedCaseInsensitiveContains($0) }
+        let burstRadius: CGFloat = isMajor ? 210 : 145
 
         // Radial starburst wedges behind the text
         let wedgeCount = 12
@@ -82,15 +91,15 @@ enum Effects {
             let theta = CGFloat(i) * (.pi * 2 / CGFloat(wedgeCount))
             let path = UIBezierPath()
             path.move(to: CGPoint(x: 0, y: 0))
-            path.addLine(to: CGPoint(x: cos(theta - 0.10) * 220,
-                                       y: sin(theta - 0.10) * 220))
-            path.addLine(to: CGPoint(x: cos(theta + 0.10) * 220,
-                                       y: sin(theta + 0.10) * 220))
+            path.addLine(to: CGPoint(x: cos(theta - 0.10) * burstRadius,
+                                       y: sin(theta - 0.10) * burstRadius))
+            path.addLine(to: CGPoint(x: cos(theta + 0.10) * burstRadius,
+                                       y: sin(theta + 0.10) * burstRadius))
             path.close()
             let wedge = SKShapeNode(path: path.cgPath)
             wedge.fillColor = (i % 2 == 0)
-                ? color.withAlphaComponent(0.30)
-                : UIColor.white.withAlphaComponent(0.18)
+                ? color.withAlphaComponent(isMajor ? 0.28 : 0.17)
+                : UIColor.white.withAlphaComponent(isMajor ? 0.16 : 0.09)
             wedge.strokeColor = .clear
             wedge.blendMode = .add
             wedge.zPosition = -2
@@ -102,15 +111,16 @@ enum Effects {
         }
 
         // Soft glow halo
-        let halo = SKShapeNode(circleOfRadius: 90)
-        halo.fillColor = color.withAlphaComponent(0.35)
+        let halo = SKShapeNode(circleOfRadius: isMajor ? 90 : 66)
+        halo.fillColor = color.withAlphaComponent(isMajor ? 0.35 : 0.22)
         halo.strokeColor = .clear
         halo.glowWidth = 16
         halo.blendMode = .add
         halo.zPosition = -1
         container.addChild(halo)
 
-        let bannerFontSize = min(CGFloat(60), max(CGFloat(34), 620 / CGFloat(max(6, text.count))))
+        let maxFont: CGFloat = isMajor ? 56 : 44
+        let bannerFontSize = min(maxFont, max(CGFloat(30), 560 / CGFloat(max(6, text.count))))
 
         // Drop shadow text
         let shadow = SKLabelNode(fontNamed: "AvenirNext-Heavy")
@@ -144,7 +154,7 @@ enum Effects {
         container.addChild(main)
 
         // Sparkles flying outward from the banner
-        for _ in 0..<14 {
+        for _ in 0..<(isMajor ? 14 : 8) {
             let s = CGFloat.random(in: 6...11)
             let star = SKShapeNode(path: smashStarPath(size: s).cgPath)
             star.fillColor = .white
@@ -188,7 +198,7 @@ enum Effects {
             flash.zPosition = 880
             scene.addChild(flash)
             flash.run(.sequence([
-                .fadeAlpha(to: 0.14, duration: 0.12),
+                .fadeAlpha(to: isMajor ? 0.14 : 0.07, duration: 0.12),
                 .fadeOut(withDuration: 0.32),
                 .removeFromParent()
             ]))
@@ -199,7 +209,7 @@ enum Effects {
             .fadeIn(withDuration: 0.14)
         ])
         let settle = SKAction.scale(to: 1.0, duration: 0.12)
-        let hold = SKAction.wait(forDuration: 0.50)
+        let hold = SKAction.wait(forDuration: isMajor ? 0.50 : 0.32)
         let out = SKAction.group([
             .scale(to: 1.5, duration: 0.32),
             .fadeOut(withDuration: 0.32),
@@ -218,12 +228,12 @@ enum Effects {
     // MARK: - Tile burst (small particle pop on each cleared tile)
 
     /// Programmatic particle emitter — no .sks file needed. Caller positions it.
-    static func makeTileBurst(tint: UIColor) -> SKEmitterNode {
+    static func makeTileBurst(tint: UIColor, count: Int = 14) -> SKEmitterNode {
         let emitter = SKEmitterNode()
         emitter.particleTexture = makeCirclePixel(diameter: 8, color: .white)
         emitter.particleColor = tint
         emitter.particleColorBlendFactor = 1.0
-        emitter.numParticlesToEmit = 14
+        emitter.numParticlesToEmit = max(3, count)
         emitter.particleBirthRate = 600
         emitter.particleLifetime = 0.55
         emitter.particleLifetimeRange = 0.2
@@ -283,6 +293,69 @@ enum Effects {
                 .removeFromParent()
             ]))
         }
+        return container
+    }
+
+    /// Breaks the actual fruit artwork into small cropped sprites so a smashed
+    /// apple still reads as apple pieces instead of generic coloured triangles.
+    /// Blockers continue to use geometric chunks because their material is not
+    /// represented by the fruit texture.
+    static func makeFruitFragmentBurst(texture: SKTexture?,
+                                       tint: UIColor,
+                                       count: Int = 5,
+                                       size: CGFloat = 18,
+                                       gravity: CGFloat = -390) -> SKNode {
+        guard let texture else {
+            return makeShardBurst(tint: tint, count: count, size: size)
+        }
+
+        let container = SKNode()
+        let columns = 3
+        let rows = 2
+        let pieceCount = max(1, min(count, columns * rows))
+        for index in 0..<pieceCount {
+            let column = index % columns
+            let row = index / columns
+            let rect = CGRect(x: CGFloat(column) / CGFloat(columns),
+                              y: CGFloat(row) / CGFloat(rows),
+                              width: 1 / CGFloat(columns),
+                              height: 1 / CGFloat(rows))
+            let fragmentTexture = SKTexture(rect: rect, in: texture)
+            let fragment = SKSpriteNode(texture: fragmentTexture)
+            let fragmentScale = CGFloat.random(in: 0.78...1.12)
+            fragment.size = CGSize(width: size * fragmentScale,
+                                   height: size * fragmentScale)
+            fragment.color = tint
+            fragment.colorBlendFactor = 0.08
+            fragment.position = CGPoint(x: (CGFloat(column) - 1) * size * 0.45,
+                                        y: (CGFloat(row) - 0.5) * size * 0.45)
+            fragment.zPosition = 738
+            fragment.zRotation = CGFloat.random(in: -0.25...0.25)
+            container.addChild(fragment)
+
+            let angle = CGFloat.random(in: 0.18...(.pi - 0.18))
+            let speed = CGFloat.random(in: 135...235)
+            let vx = cos(angle) * speed
+            let vy = sin(angle) * speed
+            let spin = CGFloat.random(in: -8...8)
+            let duration = TimeInterval.random(in: 0.48...0.74)
+            let start = fragment.position
+            var previousElapsed: CGFloat = 0
+            fragment.run(.sequence([
+                .customAction(withDuration: duration) { node, elapsed in
+                    let t = CGFloat(elapsed)
+                    let dt = max(0, t - previousElapsed)
+                    previousElapsed = t
+                    node.position = CGPoint(x: start.x + vx * t,
+                                            y: start.y + vy * t + 0.5 * gravity * t * t)
+                    node.zRotation += spin * dt
+                    node.alpha = max(0, 1 - t / CGFloat(duration))
+                    node.setScale(max(0.30, 1 - t / CGFloat(duration) * 0.58))
+                },
+                .removeFromParent()
+            ]))
+        }
+        container.run(.sequence([.wait(forDuration: 0.85), .removeFromParent()]))
         return container
     }
 
@@ -503,6 +576,103 @@ enum Effects {
         return node
     }
 
+    /// A directional streak with a travelling impact head. Unlike the old
+    /// screen-wide column decoration, this explicitly connects an origin and a
+    /// destination, so the player can read what caused each lane clear.
+    static func makeEnergySweep(from start: CGPoint,
+                                to end: CGPoint,
+                                tint: UIColor,
+                                width: CGFloat = 12,
+                                delay: TimeInterval = 0) -> SKNode {
+        let node = SKNode()
+        node.zPosition = 748
+        node.alpha = 0
+
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = hypot(dx, dy)
+        let angle = atan2(dy, dx)
+        let beam = SKShapeNode(rectOf: CGSize(width: length, height: width),
+                               cornerRadius: width / 2)
+        beam.fillColor = tint.withAlphaComponent(0.58)
+        beam.strokeColor = UIColor.white.withAlphaComponent(0.88)
+        beam.lineWidth = 1.4
+        beam.glowWidth = 8
+        beam.blendMode = .add
+        beam.position = CGPoint(x: (start.x + end.x) / 2,
+                                y: (start.y + end.y) / 2)
+        beam.zRotation = angle
+        node.addChild(beam)
+
+        let head = SKShapeNode(circleOfRadius: max(6, width * 0.72))
+        head.fillColor = .white
+        head.strokeColor = tint
+        head.lineWidth = 2
+        head.glowWidth = 10
+        head.blendMode = .add
+        head.position = start
+        node.addChild(head)
+
+        let travel = max(0.10, min(0.28, TimeInterval(length / 950)))
+        head.run(.sequence([
+            .wait(forDuration: delay),
+            .move(to: end, duration: travel),
+            .removeFromParent()
+        ]))
+        node.run(.sequence([
+            .wait(forDuration: delay),
+            .fadeIn(withDuration: 0.035),
+            .wait(forDuration: travel * 0.48),
+            .fadeOut(withDuration: travel * 0.72),
+            .removeFromParent()
+        ]))
+        return node
+    }
+
+    /// Curved objective-seeking flight used by fish combos. The motion is
+    /// deliberately short and readable: players see where the fish chose to go
+    /// without making the cascade wait several seconds.
+    static func makeFishFlight(from start: CGPoint,
+                               to end: CGPoint,
+                               tint: UIColor,
+                               delay: TimeInterval = 0) -> SKNode {
+        let node = SKNode()
+        node.zPosition = 770
+        let fish = Icons.sprite("fish.fill", size: 30, weight: .heavy, tint: tint)
+        fish.position = start
+        fish.alpha = 0
+        fish.setScale(0.72)
+        node.addChild(fish)
+
+        let path = UIBezierPath()
+        path.move(to: start)
+        let midpoint = CGPoint(x: (start.x + end.x) / 2,
+                               y: (start.y + end.y) / 2 + max(28, abs(end.x - start.x) * 0.16))
+        path.addQuadCurve(to: end, controlPoint: midpoint)
+        let duration: TimeInterval = 0.22
+        fish.run(.sequence([
+            .wait(forDuration: delay),
+            .fadeIn(withDuration: 0.04),
+            .group([
+                .follow(path.cgPath, asOffset: false, orientToPath: true, duration: duration),
+                .sequence([.scale(to: 1.05, duration: duration * 0.55),
+                           .scale(to: 0.72, duration: duration * 0.45)])
+            ]),
+            .fadeOut(withDuration: 0.04),
+            .removeFromParent()
+        ]))
+
+        node.run(.sequence([
+            .wait(forDuration: delay + duration),
+            .run { [weak node] in
+                node?.addChild(makeImpactFlash(at: end, big: false))
+            },
+            .wait(forDuration: 0.75),
+            .removeFromParent()
+        ]))
+        return node
+    }
+
     // MARK: - Bomb detonation (lightning bolts + ring blast)
 
     /// A jagged electric lightning bolt radiating outward from a point.
@@ -693,8 +863,8 @@ enum Effects {
         emitter.particleTexture = makeRectPixel(size: CGSize(width: 8, height: 14), color: .white)
         emitter.particleColorSequence = nil
         emitter.particleColorBlendFactor = 1.0
-        emitter.particleBirthRate = 240
-        emitter.numParticlesToEmit = 140
+        emitter.particleBirthRate = 170
+        emitter.numParticlesToEmit = 90
         emitter.particleLifetime = 2.4
         emitter.particleLifetimeRange = 0.6
         emitter.emissionAngle = -.pi / 2
@@ -744,16 +914,36 @@ enum Effects {
 
     // MARK: - Haptics
 
-    static func haptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
+    static func prepareHaptics() {
         guard Persistence.hapticsEnabled else { return }
-        let g = UIImpactFeedbackGenerator(style: style)
-        g.impactOccurred()
+        softHaptic.prepare()
+        lightHaptic.prepare()
+        mediumHaptic.prepare()
+        heavyHaptic.prepare()
+        rigidHaptic.prepare()
+        notificationHaptic.prepare()
+    }
+
+    static func haptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle,
+                       intensity: CGFloat = 1.0) {
+        guard Persistence.hapticsEnabled else { return }
+        let generator: UIImpactFeedbackGenerator
+        switch style {
+        case .soft: generator = softHaptic
+        case .light: generator = lightHaptic
+        case .medium: generator = mediumHaptic
+        case .heavy: generator = heavyHaptic
+        case .rigid: generator = rigidHaptic
+        @unknown default: generator = mediumHaptic
+        }
+        generator.impactOccurred(intensity: max(0, min(1, intensity)))
+        generator.prepare()
     }
 
     static func notify(_ type: UINotificationFeedbackGenerator.FeedbackType) {
         guard Persistence.hapticsEnabled else { return }
-        let g = UINotificationFeedbackGenerator()
-        g.notificationOccurred(type)
+        notificationHaptic.notificationOccurred(type)
+        notificationHaptic.prepare()
     }
 
     // MARK: - Pixel helpers (for emitter textures)

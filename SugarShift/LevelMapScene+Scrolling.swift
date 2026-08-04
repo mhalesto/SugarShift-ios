@@ -20,6 +20,14 @@ extension LevelMapScene {
             handleDebugTap(at: p)
             return
         }
+        if missionsCard != nil {
+            handleMissionsTap(at: p)
+            return
+        }
+        if towerCard != nil {
+            handleTowerCardTap(at: p)
+            return
+        }
         if let card = settingsCard {
             _ = card.handleTouchBegan(at: p, timestamp: t.timestamp)
             return
@@ -36,8 +44,9 @@ extension LevelMapScene {
             if n == "tabMap"      { focusCurrentLevel(); return }
             if n == "tabShop"     { onShop?();     return }
             if n == "tabDaily"    { showDailyChallengePreview(); return }
+            if n == "missionsStrip" { showMissionsCard(); return }
             if n == "tabFriends"  { showCollectionAlbum(); return }
-            if n == "tabBoosters" { openToolsTab(); return }
+            if n == "tabTower"    { showTowerCard(); return }
             if n == "tabRush"     { launchEndless(); return }
         }
 
@@ -138,8 +147,9 @@ extension LevelMapScene {
                 if name == "tabMap"      { focusCurrentLevel(); return }
                 if name == "tabShop"     { onShop?();     return }
                 if name == "tabDaily"    { showDailyChallengePreview(); return }
+                if name == "missionsStrip" { showMissionsCard(); return }
                 if name == "tabFriends"  { showCollectionAlbum(); return }
-                if name == "tabBoosters" { openToolsTab(); return }
+                if name == "tabTower"    { showTowerCard(); return }
                 if name == "tabRush"     { launchEndless(); return }
             }
             node = cur.parent
@@ -374,6 +384,10 @@ extension LevelMapScene {
         close.horizontalAlignmentMode = .center
         close.name = name
         shell.addChild(close)
+
+        shell.isAccessibilityElement = true
+        shell.accessibilityLabel = String(localized: "Close")
+        shell.accessibilityTraits = .button
     }
 
     func handleCollectionTap(at p: CGPoint) {
@@ -455,6 +469,15 @@ extension LevelMapScene {
             ("Mechanics", config.layout.mechanicSummary),
             ("Tip", suggestedBooster(for: config))
         ]
+        if let contract = ComboContract.contract(for: config) {
+            baseRows.insert((String(localized: "Combo bonus"),
+                             "\(contract.title)  +\(contract.reward)"), at: 3)
+        }
+        if config.isBoss {
+            let shield = config.number >= 100 ? 3 : 2
+            baseRows.insert((String(localized: "Boss"),
+                             String(localized: "Break a \(shield)-hit crown shield")), at: 2)
+        }
         if !config.modifiers.isEmpty {
             baseRows.insert(("Rules", config.modifiers.map(\.title).joined(separator: ", ")), at: 6)
         }

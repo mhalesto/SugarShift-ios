@@ -61,6 +61,10 @@ final class LevelMapScene: SKScene {
         bottomBarCenterY + bottomBarHeight / 2 + 50
     }
 
+    var missionsStripCenterY: CGFloat {
+        dailyStreakCenterY + 46
+    }
+
     // MARK: - Nodes
 
     var sky: SKShapeNode!
@@ -82,6 +86,9 @@ final class LevelMapScene: SKScene {
     var storeKitProductObserver: NSObjectProtocol?
     var eventBannerNode: SKNode?
     var dailyStreakNode: SKNode?
+    var missionsStripNode: SKNode?
+    var missionsCard: SKNode?
+    var towerCard: SKNode?
     var previewLevel: Int?
     var previewDailyChallenge: DailyChallenge?
     var nextHUDRefreshAt: TimeInterval = 0
@@ -162,6 +169,7 @@ final class LevelMapScene: SKScene {
         buildEventBanners()
         buildBottomBar()
         buildDailyStreakStrip()
+        buildMissionsStrip()
         refreshHUD()
         observeStoreKitDeliveries()
     }

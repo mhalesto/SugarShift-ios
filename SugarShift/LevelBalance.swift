@@ -55,6 +55,9 @@ enum LevelBalanceAnalyzer {
         if openingMoveScore <= 0 {
             warnings.append("opening board has no legal moves")
         }
+        if config.isBoss, config.moves < 8 {
+            warnings.append("boss shield has too few moves")
+        }
         let drops = config.layout.ingredientCount + config.layout.keyCount
         if drops > 0,
            ingredientExitColumns(for: config) < drops {
@@ -90,7 +93,11 @@ enum LevelBalanceAnalyzer {
         case .collectIngredients, .collectKeys, .openChests, .collectIngredientsAndKeys:
             goalDrag = 0.10
         }
-        let raw = 0.42 + (ratio - 0.82) * 0.55 - goalDrag
+        let effectiveGoalDrag = config.number <= 25 ? 0 : goalDrag
+        // Early bosses are teaching set-pieces with generous move budgets; the
+        // shield difficulty drag begins only after the onboarding campaign.
+        let bossDrag = config.isBoss && config.number > 25 ? 0.05 : 0
+        let raw = 0.42 + (ratio - 0.82) * 0.55 - effectiveGoalDrag - bossDrag
         return min(0.96, max(0.18, raw))
     }
 

@@ -29,6 +29,23 @@ final class EndLevelCard: SKNode {
         let rewards: [String]
         let threeStarReward: String?
         let newUnlock: String?
+        let comboSummary: String?
+
+        init(score: Int,
+             moveBonus: MoveBonus?,
+             objective: String,
+             rewards: [String],
+             threeStarReward: String?,
+             newUnlock: String?,
+             comboSummary: String? = nil) {
+            self.score = score
+            self.moveBonus = moveBonus
+            self.objective = objective
+            self.rewards = rewards
+            self.threeStarReward = threeStarReward
+            self.newUnlock = newUnlock
+            self.comboSummary = comboSummary
+        }
     }
 
     var onPrimary: (() -> Void)?  // "Next Level" or "Retry"
@@ -94,6 +111,7 @@ final class EndLevelCard: SKNode {
             if !breakdown.rewards.isEmpty { count += 1 }
             if breakdown.threeStarReward != nil { count += 1 }
             if breakdown.newUnlock != nil { count += 1 }
+            if breakdown.comboSummary != nil { count += 1 }
             return count
         }()
         let hasBreakdown = breakdownRowCount > 0
@@ -477,6 +495,12 @@ final class EndLevelCard: SKNode {
         label.position = CGPoint(x: 0, y: -1)
         label.alpha = enabled ? 1.0 : 0.5
         btn.addChild(label)
+
+        btn.isAccessibilityElement = true
+        btn.accessibilityLabel = name == "thumbsUp"
+            ? String(localized: "Rate this level: thumbs up")
+            : String(localized: "Rate this level: thumbs down")
+        btn.accessibilityTraits = enabled ? .button : [.button, .notEnabled]
         return btn
     }
 
@@ -710,6 +734,9 @@ final class EndLevelCard: SKNode {
         }
         if let newUnlock = breakdown.newUnlock {
             rows.append(("Unlocked", newUnlock))
+        }
+        if let comboSummary = breakdown.comboSummary {
+            rows.append(("Combos", comboSummary))
         }
         return rows
     }

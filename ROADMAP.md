@@ -1,5 +1,176 @@
 # SugarShift Improvement Roadmap
 
+## Precision Smash Command Pass (completed)
+
+- **Choose power instead of wasting it:** when multiple Smash tiers are
+  affordable, tapping the meter cycles Mega → Cross → Focused. Each tier spends
+  exactly 100/75/50 charge, so a deliberate smaller release preserves the rest.
+- **Aim, inspect, confirm:** the first board tap shows the exact canonical Smash
+  footprint; a second tap on that target commits it. Objective hits are green,
+  urgent hazards orange, ordinary impact purple, and a banked Rush extension
+  pink. The confirmation badge states the useful outcome before any move or
+  meter is spent.
+- **One rules path:** `Engine.playerSmashFootprint` and
+  `TacticalSmashEvaluator` now drive live resolution, target previews, and the
+  deterministic bot. Holes, chained specials, Bigger Blasts, objectives,
+  hazards, and Sugar Rush therefore cannot drift between those surfaces.
+- **Honest resource economy:** player Smashes no longer generate fresh Smash
+  charge from their own clear or resulting cascade. Remaining meter is visibly
+  earned by choosing a cheaper tier, and undo restores the selected tier.
+- **Accessible and taught:** meter captions, VoiceOver announcements, the combo
+  guide, analytics, tests, and all five starter localizations cover tier choice
+  and confirm-before-commit targeting.
+
+## Tactical Flow & Foresight Pass (completed)
+
+- **Objective-aware move intelligence:** `TacticalMoveEvaluator` layers the
+  current goal, urgent fuses/chocolate/syrup/vines, predicted special creation,
+  and exact special-combo footprints over the Engine's canonical legal moves.
+  Live hints and the deterministic bot now choose from the same ranked list.
+- **Consequences before commitment:** drag previews label the move's purpose and
+  distinguish objective cells (green), hazards (orange), ordinary footprint
+  cells (gold), and a charged Sugar Rush cross (pink). Players can see “creates
+  wrapped”, “objective +3”, or “defuses hazard” before releasing the swap.
+- **Multi-turn Flow mastery:** deliberate objective progress, created specials,
+  blocker pressure, and planned power-up combinations build visible Flow up to
+  five. Routine clears cool it by one announced step. Purposeful/powerful/
+  masterful turns earn bounded score and Smash bonuses; spending Player Smash
+  preserves Flow without recursively generating more meter.
+- **Aimed Sugar Rush:** reaching Flow 3 or producing a deep cascade banks Sugar
+  Rush. The next committed move expands from the tile the player deliberately
+  moved, with its real cross shown in the preview, instead of choosing an
+  arbitrary sorted match after resolution.
+- **State and balance parity:** Flow, best Flow, Rush, turn intent, and objective
+  credit are undo-safe and analytics-visible. The campaign simulator applies the
+  same Flow policy, tactical ranking, player-selected Rush anchor, score bonus,
+  and Smash bonus before reporting win rates.
+- **Discoverability:** Flow/Rush status sits above the Smash meter, participates
+  in VoiceOver, has a one-time teaching toast and Settings reference, and appears
+  in the end-level mastery summary. All new copy is localized into the existing
+  German, Spanish, French, Japanese, and Brazilian Portuguese starter set.
+
+## Physical Smash & Agency Pass (completed)
+
+- **Causal combo choreography:** the pure combo footprint still resolves once,
+  but each result now carries a deterministic presentation plan. Stripes sweep
+  their real lanes, bombs and wraps pulse outward, color specials link to their
+  targets, fish visibly travel to objective-ranked cells, and board clears
+  ripple from the swap instead of deleting every tile at once.
+- **Fruit-weight motion:** cleared fruit compresses before breaking into cropped
+  pieces of its own texture. Refill timing scales with travel distance, columns
+  land with a small stagger, gravity accelerates into a squash-and-settle, and
+  deeper cascades resolve faster without becoming linear or weightless.
+- **Earned spectacle:** routine matches use fewer particles and no arbitrary
+  screen-wide beam. Confetti is reserved for deep cascades, a 100-charge Mega
+  Smash, board clears, and level-scale celebrations; the emitter is lighter and
+  protected by the existing cooldown.
+- **Layered impact identity:** new pre-rendered procedural accents distinguish
+  fruit cracks, stripe whooshes, wrapped thumps, fish flights, color charging,
+  landings, Smash-ready, and Smash discharge. Board position drives stereo pan,
+  major impacts duck music briefly, and cached intensity-aware haptics avoid a
+  fresh generator allocation on every tile hit.
+- **Tactical Smash releases:** 50 charge unlocks a targeted 3x3 Focused Smash,
+  75 unlocks a row+column Cross Smash, and 100 adds the centre blast for Mega.
+  Planned power-up combinations earn more charge than automatic cascades,
+  objective hits add credit, player Smash cannot immediately refill itself, and
+  the old invisible plain-turn meter decay is gone.
+- **Less manufactured assistance:** refill bias was roughly halved and now grows
+  only after repeated failures. The random 30% late special became a single,
+  visible, deterministic Second Wind tied to fail history and objective progress;
+  shared Daily and Tower boards remain untouched.
+- **Balance parity:** the deterministic simulation now accumulates intentional vs
+  passive Smash charge, releases the same three Smash tiers, and banks/consumes
+  Sugar Rush, so campaign reports include the systems available to real players.
+
+## Sugar Tower — Roguelite Gauntlet (completed)
+
+The app's new centrepiece mode: climb floors, draft a run-long perk after
+every win, one loss ends the run.
+
+- **Weekly shared towers** (`TowerMode`): floors are seeded from the ISO week
+  (same FNV path as the daily challenge), so every player climbs the
+  identical tower and best-floor scores are comparable. A run keeps the week
+  it started in across the rollover.
+- **Escalation curve** (`TowerMode.floorConfig`, pure + unit-tested): boards
+  grow 7x7 → 9x9, colours 4 → 6, moves shrink, score targets climb, and each
+  floor features a signature mechanic band (ice/jelly/crates/vines/locks,
+  chocolate from floor 6, fuses from 12, syrup pressure every 5th floor).
+  Boosters are locked (`noBoosters`) and there are no continues.
+- **Six draftable perks** (stacking): Sugar Legs (+3 moves/floor), Bomb
+  Pocket (starting bomb), Sweet Simplicity (one fewer colour), Bigger Blasts
+  (`specialsExplodeBigger`), Head Start (Smash charge), Gold Rush (+50%
+  coins). Perks feed straight into the floor config / scene hooks.
+- **Flow**: the Tower tab (replacing the release-redundant Tools tab) opens
+  the tower card (best floor, run status, perk list, start/continue). Wins
+  bypass the campaign end card for a perk-draft interstitial; losses end the
+  run with a summary card (floors, coins, best) and instant "New run".
+  Floor coins pay out per clear (milestone bonus every 5th); the run
+  persists across app relaunches, and "Take a break" leaves mid-run safely.
+- **Leaderboard hook**: `GameCenterService.Leaderboard.towerFloor` — create
+  it in App Store Connect as a *weekly recurring* leaderboard to activate.
+- Localized into the 5 starter languages; VoiceOver labels on all tower UI.
+- **Known follow-up**: abandoning a floor mid-play (quit to map before the
+  last move) doesn't end the run, so a determined player can dodge a loss.
+  Counting abandon-after-N-moves as a loss is the tightening pass.
+
+## Feel, Retention & Reach Pass (completed)
+
+- **Feedback-intensity ladder** (`TurnFeedbackPolicy`): celebration channels
+  are now strictly tiered — banner (nice) → screen shake (big/huge) → confetti
+  (deep cascades only) — so a lone bomb no longer confettis and a
+  plain 3-match only gets a light haptic. The policy is a pure, unit-tested
+  function of cascade depth + tiles cleared, and is the first slice of turn
+  resolution lifted out of `GameScene+SwapCascade` behind a testable seam.
+  Confetti additionally has a 3s cooldown so one deep chain can't stack
+  emitters.
+- **Daily missions** (`DailyMissions`): three deterministic, date-seeded
+  missions per day (clear fruits, create/trigger power-ups, chain reactions,
+  win levels, total score) with claim-once coin rewards (doubler applies).
+  Progress hooks ride the existing chain/score/win choke points; a strip on
+  the level map (above the streak strip) opens the missions card with
+  progress bars and claim pills. Storage self-prunes to one day.
+- **Starter localizations**: the full string catalog (353 keys + 24 new ones
+  from this pass) is machine-translated into **Spanish, Brazilian Portuguese,
+  French, German, and Japanese**, merged as `needs_review` so a human pass
+  can polish before shipping. Format specifiers validated programmatically.
+- **VoiceOver sweep**: labels/traits added to the remaining tappable
+  controls — settings action rows, toggles (with live On/Off value), footer
+  buttons, shop tabs/tiles/close, end-card thumbs rating, map coins pill +
+  gear, bottom-bar tabs, event banner, streak/missions strips, close buttons,
+  and level map circles (with stars/locked state).
+- **Seed replay** (debug): the Level Tester overlay gained a "Replay seed…"
+  entry — paste the `seed` from `level_start` analytics to relaunch that
+  exact opening board via a one-shot `debugReplaySeed` override.
+
+## Combo Smash Overhaul (completed)
+
+- **One combo rules engine:** all 21 unordered special pairings classify and
+  resolve through the same pure Engine path used by gameplay, previews, hints,
+  no-move checks, and the deterministic balance simulator.
+- **Distinct pair identities:** bomb + stripe fires three lanes, color + fish
+  releases an objective-seeking school, wrapped + bomb makes a super blast,
+  and every fish pairing inherits its partner's behavior.
+- **Player Smash meter:** matches, blocker hits, and triggered specials build a
+  persistent 0-100 meter. The player can release tactical clears at 50/75/100,
+  tap the meter, and choose the impact centre; the state is fully undoable.
+- **Sugar Rush repaired:** deep cascades now bank Sugar Rush for the next
+  committed move instead of resetting the charge before it could activate.
+- **Intentional placement and truthful previews:** first-cascade specials favor
+  the moved tile, every special-pair drag previews its exact footprint, wrapped
+  guidance matches its real 5x5 blast, and fish targets are deterministic.
+- **Combo contracts:** each eligible level has an optional configuration-aware
+  bonus such as triggering specials, hitting blockers in one chain, or combining
+  two power-ups. Completion awards coins plus Smash charge.
+- **Real boss phases:** boss boards have a required crown shield, combo-driven
+  shield damage, a final-smash window, and periodic Crown Strike vines while the
+  primary objective is still active. Simulation models the same phase pressure.
+- **Feedback and summaries:** combo audio now rises in pitch/rate with depth,
+  special impacts have distinct treatments, routine banners obscure less of the
+  board, analytics capture turn/combo outcomes, and win cards summarize the run.
+- **Regression coverage:** exhaustive pair classification, deterministic
+  footprints, hint/legal-move parity, moved-tile placement, drop-item safety,
+  contract feasibility, boss shields, and campaign balance are covered by tests.
+
 ## Production Review Roadmap
 
 ### Must Fix Before Submission
@@ -29,8 +200,8 @@ Retention & feel:
 Combo depth (the matrix is now complete, and taught):
 - **Color bomb + color bomb → full board clear**; **wrapped + wrapped → double
   blast**.
-- **Combo-meter payoff** (`grantComboFreeSpecialIfCharged`): a max-tier cascade
-  chain plants a free special.
+- **Combo-meter payoff:** the meter unlocks progressively stronger player-targeted
+  Focused, Cross, and Mega Smashes instead of dropping a random free special.
 - **Specials & Combos reference** in the in-game Settings + a one-time
   **adjacency nudge** when two power-ups touch.
 
@@ -84,14 +255,14 @@ The following shipped in the latest maintenance pass and are verified by a clean
 
 ### Remaining engineering follow-ups
 
-- VoiceOver button labels: tiles + HUD are covered; a sweep to add
-  `accessibilityLabel` to the remaining tappable buttons across the card/scene
-  extensions would complete the screen-reader pass.
-- Translate `Localizable.xcstrings` into target languages (the extraction is
-  done; only the translations remain).
+- ~~VoiceOver button labels~~ — done in the Feel/Retention/Reach pass.
+- ~~Translate `Localizable.xcstrings`~~ — machine-translated into es, pt-BR,
+  fr, de, ja as `needs_review`; a human review pass is still recommended
+  before featuring those storefronts.
 - Deeper refactor: lift turn-resolution out of `GameScene+SwapCascade.swift`
   into a pure, unit-testable controller (the engine is already pure; this is
-  the scene-side seam).
+  the scene-side seam). `TurnFeedbackPolicy` is the first extracted slice;
+  scoring/spawn decisions are the next candidates.
 
 ## External Tasks (owner-only — cannot be automated in code)
 
@@ -153,8 +324,8 @@ light them up. Do them before App Store submission.
   the full 200-level campaign after playtesting candidate builds. Retune any
   level below roughly 40% simulated win rate, above 98% with high stars, or
   with repeated stuck-board reshuffles.
-- Add a small in-game or debug-menu level seed replay entry so a tester can
-  paste a seed from analytics and launch the exact opening board.
+- ~~Add a small in-game or debug-menu level seed replay entry~~ — done: the
+  Level Tester overlay's "Replay seed…" button.
 - Split the visual/animation half of `GameScene` from turn resolution in a
   dedicated refactor. The pure simulator now proves the engine direction; the
   remaining work is reducing the scene file without changing gameplay feel.

@@ -33,12 +33,26 @@ blockers, specials, an in-game coin economy, and a 200-level campaign.
   24 hours per purchase and shows an active timer.
 - Smarter idle hint suggests a swap that *creates a special* over a plain
   3-match when both are available.
+- Tactical previews now explain the real move before release, color objective
+  hits and urgent hazards separately, and rank idle hints against the current
+  goal instead of using one generic best-match heuristic.
+- Multi-turn Flow rewards consistent intentional play with bounded score and
+  Smash bonuses. Flow 3 banks an aimed Sugar Rush cross whose chosen lane is
+  previewed before the move; routine clears visibly cool Flow by one step.
 - Rewarded ads are test-enabled in Debug builds for economy tuning; Release
   builds keep them disabled until a real ad provider is configured.
 - Near-miss losses can offer one rewarded continue (+5 moves) per attempt, so
   ads are tied to clear value instead of interruption.
-- Special candies now support premium combo swaps: striped+striped,
-  striped+wrapped, color bomb+striped, color bomb+wrapped, and bomb+color bomb.
+- All 21 unordered special-candy pairs resolve through one shared rules engine
+  and have causal presentation: real lane sweeps, radial bomb/wrap pulses,
+  color-target links, objective-seeking fish flights, and ripple board clears.
+- The tactical Smash meter can release at 50/75/100 for Focused, Cross, or Mega
+  clears. At higher charge, players can cycle down to a cheaper tier, preserve
+  unused meter, preview the exact objective/hazard footprint, and confirm before
+  committing. Smashes cannot refill themselves. Planned specials and objective
+  hits still earn more charge than lucky cascades, while physical refill timing,
+  fruit-texture fragments, spatial audio, and restrained milestone effects make
+  each impact readable.
 - The shop is split into Earn, Boosts, Special, and Coins tabs so ads,
   boosters, timed perks, piggy bank, and StoreKit purchases are not shown as
   one crowded grid.

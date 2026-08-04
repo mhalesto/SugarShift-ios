@@ -16,6 +16,22 @@ struct LevelSimulationSummary: Equatable {
     }
 }
 
+private struct SimulationClearStats {
+    var tilesCleared = 0
+    var blockersDamaged = 0
+    var specialsTriggered = 0
+    var objectiveHits = 0
+    var depth = 0
+
+    mutating func merge(_ other: SimulationClearStats) {
+        tilesCleared += other.tilesCleared
+        blockersDamaged += other.blockersDamaged
+        specialsTriggered += other.specialsTriggered
+        objectiveHits += other.objectiveHits
+        depth = max(depth, other.depth)
+    }
+}
+
 enum LevelSimulationBot {
     static func simulate(config: LevelConfig,
                          attempts: Int = 20,
@@ -39,7 +55,7 @@ enum LevelSimulationBot {
 
             var score = 0
             var movesLeft = config.moves
-            let startingBlockers = remainingBlockerCount(in: grid)
+            var startingBlockers = remainingBlockerCount(in: grid)
             var collectedGoalTiles = 0
             var createdSpecials = 0
             var detonatedBombs = 0
@@ -48,9 +64,14 @@ enum LevelSimulationBot {
             var openedChests = 0
             var maxCascadeDepth = 0
             var wasStuck = false
+            var bossShieldRemaining = config.isBoss ? (config.number >= 100 ? 3 : 2) : 0
+            var bossTurnsUntilPressure = 4
+            var smashCharge = 0
+            var sugarRushCharged = false
+            var flowLevel = 0
 
             while movesLeft > 0,
-                  !isGoalComplete(config: config,
+                  !(isGoalComplete(config: config,
                                   grid: grid,
                                   score: score,
                                   collectedGoalTiles: collectedGoalTiles,
@@ -58,16 +79,16 @@ enum LevelSimulationBot {
                                   detonatedBombs: detonatedBombs,
                                   collectedIngredients: collectedIngredients,
                                   collectedKeys: collectedKeys,
-                                  openedChests: openedChests) {
-                guard let move = chooseMove(in: grid, for: config) else {
+                                  openedChests: openedChests) && bossShieldRemaining == 0) {
+                guard let move = chooseMove(in: grid,
+                                            for: config,
+                                            sugarRushCharged: sugarRushCharged) else {
                     wasStuck = true
                     guard reshuffle(&grid, rng: &rng, ensureMove: true) else { break }
                     continue
                 }
 
-                let originalGrid = grid
-                let swap = Engine.swapIfValid(grid, move.0, move.1)
-                guard swap.didSwap else {
+                guard let swap = Engine.classifySwap(grid, move.0, move.1) else {
                     wasStuck = true
                     guard reshuffle(&grid, rng: &rng, ensureMove: true) else { break }
                     continue
@@ -75,36 +96,198 @@ enum LevelSimulationBot {
 
                 grid = swap.grid
                 movesLeft -= 1
+                let scoreAtTurnStart = score
+                let specialsAtTurnStart = createdSpecials
+                let bombsBeforeMove = detonatedBombs
+                var bossDamageThisTurn = 0
+                var turnStats = SimulationClearStats()
 
-                if let colorBombClear = colorBombClearPositions(beforeSwap: originalGrid,
-                                                                afterSwap: grid,
-                                                                move: move) {
-                    resolveExplicitClear(config: config,
-                                         grid: &grid,
-                                         matches: colorBombClear,
-                                         rng: &rng,
-                                         score: &score,
-                                         collectedGoalTiles: &collectedGoalTiles,
-                                         detonatedBombs: &detonatedBombs,
-                                         collectedIngredients: &collectedIngredients,
-                                         collectedKeys: &collectedKeys,
-                                         openedChests: &openedChests)
+                var explicitClear: Set<Pos>?
+                var explicitChargeMultiplier = 1.0
+                let turnIntent: TurnIntent
+                switch swap.activation {
+                case .normal:
+                    turnIntent = .match
+                    break
+                case .colorBomb(let position, let targetColor):
+                    turnIntent = .special
+                    explicitChargeMultiplier = 1.18
+                    var matches: Set<Pos> = [position]
+                    for r in 0..<grid.count {
+                        for c in 0..<grid[r].count where grid[r][c]?.color == targetColor {
+                            matches.insert(Pos(r: r, c: c))
+                        }
+                    }
+                    explicitClear = Engine.expandMatchesWithSpecials(
+                        grid,
+                        matches,
+                        bigger: config.modifiers.contains(.specialsExplodeBigger),
+                        excludingSpecialsAt: [position])
+                case .specialCombo(let kind, let first, let second, let targetColor):
+                    turnIntent = .specialCombo
+                    explicitChargeMultiplier = 1.30
+                    bossDamageThisTurn = 2
+                    let excluded: Set<Pos> = [move.0, move.1]
+                    explicitClear = Engine.resolveSpecialCombo(
+                        grid,
+                        kind: kind,
+                        first: first,
+                        second: second,
+                        positions: move,
+                        targetColor: targetColor,
+                        rankedFishTargets: rankedFishTargets(in: grid,
+                                                            for: config,
+                                                            excluding: excluded),
+                        bigger: config.modifiers.contains(.specialsExplodeBigger))
                 }
 
-                let resolvedDepth = resolveCascades(config: config,
-                                                    grid: &grid,
-                                                    rng: &rng,
-                                                    score: &score,
-                                                    collectedGoalTiles: &collectedGoalTiles,
-                                                    createdSpecials: &createdSpecials,
-                                                    detonatedBombs: &detonatedBombs,
-                                                    collectedIngredients: &collectedIngredients,
-                                                    collectedKeys: &collectedKeys,
-                                                    openedChests: &openedChests)
+                if let explicitClear {
+                    turnStats.merge(resolveExplicitClearDetailed(
+                        config: config,
+                        grid: &grid,
+                        matches: explicitClear,
+                        rng: &rng,
+                        score: &score,
+                        collectedGoalTiles: &collectedGoalTiles,
+                        detonatedBombs: &detonatedBombs,
+                        collectedIngredients: &collectedIngredients,
+                        collectedKeys: &collectedKeys,
+                        openedChests: &openedChests,
+                        smashCharge: &smashCharge,
+                        sugarRushCharged: &sugarRushCharged,
+                        sugarRushPreferredAnchor: move.1,
+                        chargeMultiplier: explicitChargeMultiplier))
+                }
+
+                let cascadeStats = resolveCascadesDetailed(config: config,
+                                                           grid: &grid,
+                                                           rng: &rng,
+                                                           score: &score,
+                                                           collectedGoalTiles: &collectedGoalTiles,
+                                                           createdSpecials: &createdSpecials,
+                                                           detonatedBombs: &detonatedBombs,
+                                                           collectedIngredients: &collectedIngredients,
+                                                           collectedKeys: &collectedKeys,
+                                                           openedChests: &openedChests,
+                                                           smashCharge: &smashCharge,
+                                                           sugarRushCharged: &sugarRushCharged,
+                                                           sugarRushPreferredAnchor: move.1)
+                turnStats.merge(cascadeStats)
+                var resolvedDepth = cascadeStats.depth
                 maxCascadeDepth = max(maxCascadeDepth, resolvedDepth)
+                if bossDamageThisTurn == 0,
+                   resolvedDepth >= 3 || detonatedBombs > bombsBeforeMove {
+                    bossDamageThisTurn = 1
+                }
+                bossShieldRemaining = max(0, bossShieldRemaining - bossDamageThisTurn)
+
+                let mastery = TurnMasteryPolicy.evaluate(
+                    flow: flowLevel,
+                    intent: turnIntent,
+                    tilesCleared: turnStats.tilesCleared,
+                    blockersDamaged: turnStats.blockersDamaged,
+                    specialsTriggered: turnStats.specialsTriggered,
+                    specialsCreated: max(0, createdSpecials - specialsAtTurnStart),
+                    objectiveHits: turnStats.objectiveHits,
+                    cascadeDepth: turnStats.depth,
+                    scoreEarned: max(0, score - scoreAtTurnStart))
+                flowLevel = mastery.flowAfter
+                score += mastery.scoreBonus
+                smashCharge = min(100, smashCharge + mastery.smashBonus)
+                if mastery.chargesSugarRush { sugarRushCharged = true }
+
+                // Model the same player-timed Smash tiers as live gameplay. The
+                // greedy bot releases as soon as a tier is available, giving the
+                // balance report a conservative, deterministic estimate of the
+                // mechanic's power rather than ignoring it entirely.
+                if movesLeft > 0,
+                   let smashTier = PlayerSmashTier.tier(for: smashCharge),
+                   let smashAnalysis = TacticalSmashEvaluator.bestTarget(
+                    tier: smashTier,
+                    in: grid,
+                    config: config,
+                    sugarRushCharged: sugarRushCharged) {
+                    let smashTarget = smashAnalysis.center
+                    movesLeft -= 1
+                    smashCharge = max(0, smashCharge - smashTier.chargeCost)
+                    let smashScoreStart = score
+                    let smashSpecialsStart = createdSpecials
+                    var footprint = Engine.playerSmashFootprint(in: grid,
+                                                                centeredAt: smashTarget,
+                                                                tier: smashTier)
+                    footprint = Engine.expandMatchesWithSpecials(
+                        grid,
+                        footprint,
+                        bigger: config.modifiers.contains(.specialsExplodeBigger))
+                    var smashStats = resolveExplicitClearDetailed(
+                        config: config,
+                        grid: &grid,
+                        matches: footprint,
+                        rng: &rng,
+                        score: &score,
+                        collectedGoalTiles: &collectedGoalTiles,
+                        detonatedBombs: &detonatedBombs,
+                        collectedIngredients: &collectedIngredients,
+                        collectedKeys: &collectedKeys,
+                        openedChests: &openedChests,
+                        smashCharge: &smashCharge,
+                        sugarRushCharged: &sugarRushCharged,
+                        sugarRushPreferredAnchor: smashTarget,
+                        chargeMultiplier: 0)
+                    let postSmash = resolveCascadesDetailed(
+                        config: config,
+                        grid: &grid,
+                        rng: &rng,
+                        score: &score,
+                        collectedGoalTiles: &collectedGoalTiles,
+                        createdSpecials: &createdSpecials,
+                        detonatedBombs: &detonatedBombs,
+                        collectedIngredients: &collectedIngredients,
+                        collectedKeys: &collectedKeys,
+                        openedChests: &openedChests,
+                        smashCharge: &smashCharge,
+                        sugarRushCharged: &sugarRushCharged,
+                        sugarRushPreferredAnchor: smashTarget,
+                        chargeMultiplier: 0)
+                    smashStats.merge(postSmash)
+                    let smashMastery = TurnMasteryPolicy.evaluate(
+                        flow: flowLevel,
+                        intent: .playerSmash,
+                        tilesCleared: smashStats.tilesCleared,
+                        blockersDamaged: smashStats.blockersDamaged,
+                        specialsTriggered: smashStats.specialsTriggered,
+                        specialsCreated: max(0, createdSpecials - smashSpecialsStart),
+                        objectiveHits: smashStats.objectiveHits,
+                        cascadeDepth: smashStats.depth,
+                        scoreEarned: max(0, score - smashScoreStart))
+                    flowLevel = smashMastery.flowAfter
+                    score += smashMastery.scoreBonus
+                    resolvedDepth = max(resolvedDepth, postSmash.depth)
+                    maxCascadeDepth = max(maxCascadeDepth, postSmash.depth)
+                    bossShieldRemaining = max(0, bossShieldRemaining - smashTier.bossDamage)
+                }
+
+                let primaryComplete = isGoalComplete(config: config,
+                                                     grid: grid,
+                                                     score: score,
+                                                     collectedGoalTiles: collectedGoalTiles,
+                                                     createdSpecials: createdSpecials,
+                                                     detonatedBombs: detonatedBombs,
+                                                     collectedIngredients: collectedIngredients,
+                                                     collectedKeys: collectedKeys,
+                                                     openedChests: openedChests)
+                if config.isBoss, bossShieldRemaining > 0, !primaryComplete {
+                    bossTurnsUntilPressure -= 1
+                    if bossTurnsUntilPressure <= 0 {
+                        if seedBossPressure(in: &grid, rng: &rng), case .clearBlockers = config.goal {
+                            startingBlockers += 1
+                        }
+                        bossTurnsUntilPressure = bossShieldRemaining == (config.number >= 100 ? 3 : 2) ? 4 : 3
+                    }
+                }
             }
 
-            let won = isGoalComplete(config: config,
+            let won = bossShieldRemaining == 0 && isGoalComplete(config: config,
                                      grid: grid,
                                      score: score,
                                      collectedGoalTiles: collectedGoalTiles,
@@ -169,45 +352,31 @@ enum LevelSimulationBot {
         }
     }
 
-    private static func chooseMove(in grid: Grid, for config: LevelConfig) -> (Pos, Pos)? {
-        let moves = Engine.scoredLegalMoves(grid)
-        guard !moves.isEmpty else { return nil }
-
-        return moves.max { lhs, rhs in
-            weightedMoveScore(lhs, grid: grid, config: config) <
-                weightedMoveScore(rhs, grid: grid, config: config)
-        }?.move
+    private static func chooseMove(in grid: Grid,
+                                   for config: LevelConfig,
+                                   sugarRushCharged: Bool) -> (Pos, Pos)? {
+        TacticalMoveEvaluator.rankedMoves(in: grid,
+                                          config: config,
+                                          sugarRushCharged: sugarRushCharged).first?.move
     }
 
-    private static func weightedMoveScore(_ scoredMove: (move: (Pos, Pos), score: Int),
-                                          grid: Grid,
-                                          config: LevelConfig) -> Int {
-        let a = scoredMove.move.0
-        let b = scoredMove.move.1
-        var score = scoredMove.score
-
+    private static func simulationObjectiveImpact(config: LevelConfig,
+                                                  preClear: [Pos: Cell],
+                                                  clear: ClearResult) -> Int {
         switch config.goal {
-        case .score:
-            break
         case .clearBlockers:
-            score += blockerPressure(near: a, in: grid) * 35
-            score += blockerPressure(near: b, in: grid) * 35
+            return clear.damagedBlockers.count
         case .collectColor(let index, _):
             let palette = Array(Theme.colors.prefix(config.colors))
             let target = palette[max(0, index) % max(1, palette.count)].lowercased()
-            if grid[a.r][a.c]?.color.lowercased() == target { score += 25 }
-            if grid[b.r][b.c]?.color.lowercased() == target { score += 25 }
-        case .createSpecials, .detonateBombs:
-            score += scoredMove.score >= 200 ? 80 : 0
-        case .collectIngredients, .collectKeys, .collectIngredientsAndKeys:
-            score += ingredientPressure(near: a, in: grid) * 30
-            score += ingredientPressure(near: b, in: grid) * 30
+            return clear.cleared.filter { preClear[$0]?.color.lowercased() == target }.count
         case .openChests:
-            score += blockerPressure(near: a, in: grid) * 30
-            score += blockerPressure(near: b, in: grid) * 30
+            return clear.damagedBlockers.filter { preClear[$0]?.blocker?.type == .chest }.count
+        case .detonateBombs:
+            return preClear.values.filter { $0.special == .bomb }.count
+        default:
+            return 0
         }
-
-        return score
     }
 
     static func resolveCascades<R: RandomNumberGenerator>(config: LevelConfig,
@@ -220,8 +389,41 @@ enum LevelSimulationBot {
                                                          collectedIngredients: inout Int,
                                                          collectedKeys: inout Int,
                                                          openedChests: inout Int) -> Int {
+        var smashCharge = 0
+        var sugarRushCharged = false
+        return resolveCascadesDetailed(config: config,
+                                       grid: &grid,
+                                       rng: &rng,
+                                       score: &score,
+                                       collectedGoalTiles: &collectedGoalTiles,
+                                       createdSpecials: &createdSpecials,
+                                       detonatedBombs: &detonatedBombs,
+                                       collectedIngredients: &collectedIngredients,
+                                       collectedKeys: &collectedKeys,
+                                       openedChests: &openedChests,
+                                       smashCharge: &smashCharge,
+                                       sugarRushCharged: &sugarRushCharged).depth
+    }
+
+    private static func resolveCascadesDetailed<R: RandomNumberGenerator>(
+        config: LevelConfig,
+        grid: inout Grid,
+        rng: inout R,
+        score: inout Int,
+        collectedGoalTiles: inout Int,
+        createdSpecials: inout Int,
+        detonatedBombs: inout Int,
+        collectedIngredients: inout Int,
+        collectedKeys: inout Int,
+        openedChests: inout Int,
+        smashCharge: inout Int,
+        sugarRushCharged: inout Bool,
+        sugarRushPreferredAnchor: Pos? = nil,
+        chargeMultiplier: Double = 1
+    ) -> SimulationClearStats {
         var depth = 0
         var chocolateDamaged = false
+        var stats = SimulationClearStats()
 
         while depth < 24 {
             let groups = Engine.findMatchGroups(grid)
@@ -244,7 +446,26 @@ enum LevelSimulationBot {
             matches = Engine.expandMatchesWithSpecials(grid,
                                                        matches,
                                                        bigger: config.modifiers.contains(.specialsExplodeBigger))
+            let fishCount = matches.reduce(into: 0) { count, p in
+                if grid[p.r][p.c]?.special == .fish { count += 1 }
+            }
+            if fishCount > 0 {
+                matches.formUnion(rankedFishTargets(in: grid,
+                                                    for: config,
+                                                    excluding: matches)
+                    .prefix(fishCount))
+            }
             for square in squares { matches.formUnion(square) }
+            if depth == 1, sugarRushCharged {
+                let rush = Engine.sugarRushResolution(
+                    in: grid,
+                    base: matches,
+                    preferredAnchor: sugarRushPreferredAnchor)
+                if rush.anchor != nil {
+                    matches = rush.positions
+                }
+                sugarRushCharged = false
+            }
             var spawn = Engine.specialSpawn(from: groups,
                                             bombRunLength: config.bombSpawnRunLength)
             if let square = squares.first,
@@ -254,6 +475,7 @@ enum LevelSimulationBot {
             let spawnColor = spawn.flatMap { grid[$0.position.r][$0.position.c]?.color }
             let preClear = cellSnapshot(grid, positions: matches)
             let triggeredBombs = triggeredBombCount(in: grid, positions: matches)
+            let triggeredSpecials = preClear.values.filter { $0.special != nil }.count
             let clear = Engine.clearMatches(&grid, matches: matches)
             guard clear.affectedCount > 0 else { break }
 
@@ -271,6 +493,21 @@ enum LevelSimulationBot {
             openedChests += openedAdjacent.count
             chocolateDamaged = chocolateDamaged ||
                 clear.damagedBlockers.contains { preClear[$0]?.blocker?.type == .chocolate }
+            stats.tilesCleared += clear.cleared.count
+            stats.blockersDamaged += clear.damagedBlockers.count
+            stats.specialsTriggered += triggeredSpecials
+            stats.depth = max(stats.depth, depth)
+            let objectiveHits = simulationObjectiveImpact(config: config,
+                                                           preClear: preClear,
+                                                           clear: clear)
+            stats.objectiveHits += objectiveHits
+            smashCharge = min(100, smashCharge + GameScene.smashChargeGain(
+                tilesCleared: clear.cleared.count,
+                blockersDamaged: clear.damagedBlockers.count,
+                specialsTriggered: triggeredSpecials,
+                multiplier: (depth == 1 ? 1.0 : 0.50) * max(0, chargeMultiplier),
+                objectiveHits: objectiveHits))
+            if depth >= 3 { sugarRushCharged = true }
 
             if let spawn, clear.cleared.contains(spawn.position) {
                 let color = spawnColor ?? Array(Theme.colors.prefix(config.colors)).randomElement(using: &rng) ?? Theme.colors[0]
@@ -290,23 +527,40 @@ enum LevelSimulationBot {
                    openedChests: &openedChests)
         }
 
-        return depth
+        return stats
     }
 
-    private static func resolveExplicitClear<R: RandomNumberGenerator>(config: LevelConfig,
-                                                                       grid: inout Grid,
-                                                                       matches: Set<Pos>,
-                                                                       rng: inout R,
-                                                                       score: inout Int,
-                                                                       collectedGoalTiles: inout Int,
-                                                                       detonatedBombs: inout Int,
-                                                                       collectedIngredients: inout Int,
-                                                                       collectedKeys: inout Int,
-                                                                       openedChests: inout Int) {
-        let preClear = cellSnapshot(grid, positions: matches)
-        let triggeredBombs = triggeredBombCount(in: grid, positions: matches)
-        let clear = Engine.clearMatches(&grid, matches: matches)
-        guard clear.affectedCount > 0 else { return }
+    private static func resolveExplicitClearDetailed<R: RandomNumberGenerator>(
+        config: LevelConfig,
+        grid: inout Grid,
+        matches: Set<Pos>,
+        rng: inout R,
+        score: inout Int,
+        collectedGoalTiles: inout Int,
+        detonatedBombs: inout Int,
+        collectedIngredients: inout Int,
+        collectedKeys: inout Int,
+        openedChests: inout Int,
+        smashCharge: inout Int,
+        sugarRushCharged: inout Bool,
+        sugarRushPreferredAnchor: Pos? = nil,
+        chargeMultiplier: Double
+    ) -> SimulationClearStats {
+        var resolvedMatches = matches
+        if sugarRushCharged {
+            let rush = Engine.sugarRushResolution(in: grid,
+                                                  base: matches,
+                                                  preferredAnchor: sugarRushPreferredAnchor)
+            if rush.anchor != nil {
+                resolvedMatches = rush.positions
+                sugarRushCharged = false
+            }
+        }
+        let preClear = cellSnapshot(grid, positions: resolvedMatches)
+        let triggeredBombs = triggeredBombCount(in: grid, positions: resolvedMatches)
+        let triggeredSpecials = preClear.values.filter { $0.special != nil }.count
+        let clear = Engine.clearMatches(&grid, matches: resolvedMatches)
+        guard clear.affectedCount > 0 else { return SimulationClearStats() }
         score += scoreForClear(config: config, preClear: preClear, clear: clear, depth: 1)
         recordGoalProgress(config: config,
                            palette: Array(Theme.colors.prefix(config.colors)),
@@ -317,6 +571,15 @@ enum LevelSimulationBot {
                            detonatedBombs: &detonatedBombs)
         openedChests += openedChestCount(preClear: preClear, clear: clear)
         openedChests += Engine.openAdjacentChests(&grid, near: clear.cleared.union(clear.damagedBlockers)).count
+        let objectiveHits = simulationObjectiveImpact(config: config,
+                                                       preClear: preClear,
+                                                       clear: clear)
+        smashCharge = min(100, smashCharge + GameScene.smashChargeGain(
+            tilesCleared: clear.cleared.count,
+            blockersDamaged: clear.damagedBlockers.count,
+            specialsTriggered: triggeredSpecials,
+            multiplier: chargeMultiplier,
+            objectiveHits: objectiveHits))
         settle(config: config,
                grid: &grid,
                rng: &rng,
@@ -324,6 +587,11 @@ enum LevelSimulationBot {
                collectedIngredients: &collectedIngredients,
                collectedKeys: &collectedKeys,
                openedChests: &openedChests)
+        return SimulationClearStats(tilesCleared: clear.cleared.count,
+                                    blockersDamaged: clear.damagedBlockers.count,
+                                    specialsTriggered: triggeredSpecials,
+                                    objectiveHits: objectiveHits,
+                                    depth: 1)
     }
 
     private static func settle<R: RandomNumberGenerator>(config: LevelConfig,
@@ -389,28 +657,29 @@ enum LevelSimulationBot {
         return !ensureMove || Engine.hasAnyMoves(best)
     }
 
-    private static func colorBombClearPositions(beforeSwap: Grid,
-                                                afterSwap: Grid,
-                                                move: (Pos, Pos)) -> Set<Pos>? {
-        let a = move.0
-        let b = move.1
-        let aBefore = beforeSwap[a.r][a.c]
-        let bBefore = beforeSwap[b.r][b.c]
-        let aIsBomb = aBefore?.special == .colorBomb
-        let bIsBomb = bBefore?.special == .colorBomb
-        guard aIsBomb || bIsBomb else { return nil }
-
-        let targetColor = aIsBomb ? bBefore?.color : aBefore?.color
-        guard let targetColor else { return Set([a, b]) }
-        var matches = Set([a, b])
-        for r in 0..<afterSwap.count {
-            for c in 0..<afterSwap[r].count {
-                if afterSwap[r][c]?.color == targetColor {
-                    matches.insert(Pos(r: r, c: c))
-                }
+    private static func seedBossPressure<R: RandomNumberGenerator>(in grid: inout Grid,
+                                                                    rng: inout R) -> Bool {
+        var candidates: [Pos] = []
+        for r in 0..<grid.count {
+            for c in 0..<grid[r].count {
+                guard let cell = grid[r][c],
+                      cell.kind == .normal,
+                      cell.blocker == nil,
+                      cell.special == nil else { continue }
+                candidates.append(Pos(r: r, c: c))
             }
         }
-        return matches
+        guard let target = candidates.randomElement(using: &rng) else { return false }
+        grid[target.r][target.c]?.blocker = Blocker(type: .vine, hits: 1)
+        return true
+    }
+
+    private static func rankedFishTargets(in grid: Grid,
+                                          for config: LevelConfig,
+                                          excluding: Set<Pos>) -> [Pos] {
+        TacticalMoveEvaluator.rankedTargets(in: grid,
+                                            config: config,
+                                            excluding: excluding)
     }
 
     private static func recordGoalProgress(config: LevelConfig,
@@ -503,49 +772,26 @@ enum LevelSimulationBot {
         }
     }
 
-    private static func blockerPressure(near pos: Pos, in grid: Grid) -> Int {
-        neighbors(of: pos, in: grid).filter { grid[$0.r][$0.c]?.blocker != nil }.count +
-            (grid[pos.r][pos.c]?.blocker != nil ? 1 : 0)
-    }
-
-    private static func ingredientPressure(near pos: Pos, in grid: Grid) -> Int {
-        neighbors(of: pos, in: grid).filter { grid[$0.r][$0.c]?.kind == .ingredient }.count +
-            (grid[pos.r][pos.c]?.kind == .ingredient ? 1 : 0)
-    }
-
-    private static func neighbors(of pos: Pos, in grid: Grid) -> [Pos] {
-        let rows = grid.count
-        let cols = rows > 0 ? grid[0].count : 0
-        return [
-            Pos(r: pos.r - 1, c: pos.c),
-            Pos(r: pos.r + 1, c: pos.c),
-            Pos(r: pos.r, c: pos.c - 1),
-            Pos(r: pos.r, c: pos.c + 1)
-        ].filter { $0.r >= 0 && $0.r < rows && $0.c >= 0 && $0.c < cols }
-    }
-
     private static func cascadeBoost(for config: LevelConfig, depth: Int) -> Double {
         guard depth <= 2 else { return 0 }
 
         let rangeBase: Double
         switch config.number {
-        case 1...5: rangeBase = 0.24
-        case 6...10: rangeBase = 0.20
-        case 11...15: rangeBase = 0.16
-        case 16...20: rangeBase = 0.13
-        case 21...25: rangeBase = 0.10
-        case 26...50: rangeBase = 0.08
-        case 51...100: rangeBase = 0.06
-        case 101...150: rangeBase = 0.05
-        default: rangeBase = 0.04
+        case 1...5: rangeBase = 0.12
+        case 6...10: rangeBase = 0.10
+        case 11...25: rangeBase = 0.07
+        case 26...50: rangeBase = 0.05
+        case 51...100: rangeBase = 0.035
+        case 101...150: rangeBase = 0.025
+        default: rangeBase = 0.02
         }
 
         let archetypeBoost: Double
         switch config.archetype {
-        case .starter: archetypeBoost = 0.02
-        case .combo: archetypeBoost = 0.03
-        case .bombRush: archetypeBoost = 0.02
-        case .crowded: archetypeBoost = 0.01
+        case .starter: archetypeBoost = 0.01
+        case .combo: archetypeBoost = 0.02
+        case .bombRush: archetypeBoost = 0.01
+        case .crowded: archetypeBoost = 0.005
         case .ice, .lock, .finale: archetypeBoost = 0
         }
 
@@ -557,6 +803,6 @@ enum LevelSimulationBot {
         case .crownChallenge: difficultyDrag = 0.06
         }
 
-        return min(0.30, max(0, rangeBase + archetypeBoost - difficultyDrag))
+        return min(0.20, max(0, rangeBase + archetypeBoost - difficultyDrag))
     }
 }

@@ -171,6 +171,17 @@ extension LevelMapScene {
                                isCurrent: Bool) -> SKNode {
         let container = SKNode()
 
+        container.isAccessibilityElement = true
+        if unlocked {
+            container.accessibilityLabel = stars > 0
+                ? String(localized: "Level \(n), \(stars) stars")
+                : String(localized: "Level \(n)")
+            container.accessibilityTraits = .button
+        } else {
+            container.accessibilityLabel = String(localized: "Level \(n), locked")
+            container.accessibilityTraits = [.button, .notEnabled]
+        }
+
         if unlocked {
             // Soft glow halo behind current level
             if isCurrent {

@@ -229,6 +229,10 @@ final class ShopCard: SKNode {
             label.name = name
             fitLabel(label, maxWidth: tabW - 10, minFontSize: 8)
             shell.addChild(label)
+
+            shell.isAccessibilityElement = true
+            shell.accessibilityLabel = tab.title
+            shell.accessibilityTraits = isSelected ? [.button, .selected] : .button
         }
     }
 
@@ -317,6 +321,10 @@ final class ShopCard: SKNode {
         close.horizontalAlignmentMode = .center
         close.name = "shopClose"
         closeShell.addChild(close)
+
+        closeShell.isAccessibilityElement = true
+        closeShell.accessibilityLabel = String(localized: "Close")
+        closeShell.accessibilityTraits = .button
     }
 
     private func buildTile(_ item: Item, into parent: SKNode, at point: CGPoint, size: CGSize) {
@@ -389,6 +397,10 @@ final class ShopCard: SKNode {
         btnL.horizontalAlignmentMode = .center
         fitLabel(btnL, maxWidth: btnW - 12, minFontSize: 9)
         btn.addChild(btnL)
+
+        tile.isAccessibilityElement = true
+        tile.accessibilityLabel = "\(item.title). \(item.subtitle). \(item.buttonText)"
+        tile.accessibilityTraits = item.enabled ? .button : [.button, .notEnabled]
     }
 
     private func buildFeatureTile(_ item: Item, into parent: SKNode, at point: CGPoint, size: CGSize) {
@@ -464,6 +476,10 @@ final class ShopCard: SKNode {
                              labelY: -size.height / 2 + 37,
                              x: textX + meterW / 2)
         }
+
+        tile.isAccessibilityElement = true
+        tile.accessibilityLabel = "\(item.title). \(item.subtitle). \(item.buttonText)"
+        tile.accessibilityTraits = item.enabled ? .button : [.button, .notEnabled]
     }
 
     private func addIcon(for item: Item, to parent: SKNode, size: CGFloat) {

@@ -11,6 +11,12 @@ extension GameScene {
         // Any interaction clears a lingering idle hint so arrows never stack up.
         cancelIdleHint()
 
+        // Tower interstitials (perk draft / run over) sit above everything.
+        if towerOverlay != nil {
+            handleTowerOverlayTap(at: p)
+            return
+        }
+
         // 0. End-level card takes precedence
         if let card = endLevelCard {
             _ = card.handleTap(at: p)
@@ -103,12 +109,27 @@ extension GameScene {
                 Effects.haptic(.light)
                 return
             }
+            if n.name == "smashMeterButton" {
+                handleSmashMeterTap()
+                return
+            }
             if let name = n.name, name.hasPrefix("booster:") {
                 let label = String(name.dropFirst("booster:".count))
                 handleBoosterTap(label)
                 return
             }
             node = n.parent
+        }
+
+        if smashTargeting,
+           let pos = cellAt(p),
+           grid[pos.r][pos.c]?.kind == .normal {
+            if smashPreviewTarget == pos {
+                activatePlayerSmash(at: pos)
+            } else {
+                showPlayerSmashPreview(at: pos)
+            }
+            return
         }
 
         // 3. Booster mode active — next tile tap consumes it
@@ -206,24 +227,120 @@ extension GameScene {
 
     // MARK: - Pre-swap ghost preview
 
+    /// First-tap confirmation for a manual Smash. The player sees the exact
+    /// footprint and tactical value before committing a move or meter charge.
+    func showPlayerSmashPreview(at target: Pos) {
+        guard smashTargeting,
+              let tier = selectedSmashTier ?? PlayerSmashTier.tier(for: smashCharge),
+              let analysis = TacticalSmashEvaluator.analysis(
+                tier: tier,
+                centeredAt: target,
+                in: grid,
+                config: levelConfig,
+                sugarRushCharged: sugarRushCharged) else { return }
+        clearPlayerSmashPreview()
+        smashPreviewTarget = target
+
+        for position in analysis.affected {
+            let outline = SKShapeNode(
+                rectOf: CGSize(width: tileSize * 0.92, height: tileSize * 0.92),
+                cornerRadius: tileSize * 0.22)
+            let color: UIColor
+            if analysis.hazardPositions.contains(position) {
+                color = UIColor(hex: "#FB923C")
+            } else if analysis.objectivePositions.contains(position) {
+                color = UIColor(hex: "#34D399")
+            } else if sugarRushCharged {
+                color = UIColor(hex: "#EC4899")
+            } else {
+                color = UIColor(hex: "#A855F7")
+            }
+            outline.fillColor = color.withAlphaComponent(position == target ? 0.30 : 0.16)
+            outline.strokeColor = color.withAlphaComponent(0.95)
+            outline.lineWidth = position == target ? 3 : 2
+            outline.glowWidth = position == target ? 5 : 2
+            outline.position = point(forRow: position.r, col: position.c)
+            outline.zPosition = 735
+            outline.alpha = 0
+            worldNode.addChild(outline)
+            outline.run(.fadeIn(withDuration: 0.09))
+            if position == target {
+                outline.run(.repeatForever(.sequence([
+                    .scale(to: 1.08, duration: 0.42),
+                    .scale(to: 1.0, duration: 0.42)
+                ])))
+            }
+            smashPreviewNodes.append(outline)
+        }
+
+        let detail: String
+        if !analysis.objectivePositions.isEmpty {
+            detail = String(localized: "OBJECTIVE +\(analysis.objectivePositions.count)")
+        } else if !analysis.hazardPositions.isEmpty {
+            detail = analysis.hazardPositions.count == 1
+                ? String(localized: "DEFUSES HAZARD")
+                : String(localized: "HAZARDS +\(analysis.hazardPositions.count)")
+        } else {
+            detail = String(localized: "CLEARS \(analysis.affected.count)")
+        }
+        let text = tier.compactTitle + " • " + detail + " • "
+            + String(localized: "TAP AGAIN TO SMASH")
+        let badge = SKShapeNode(
+            rectOf: CGSize(width: min(size.width - 28, max(190, CGFloat(text.count) * 6.2)),
+                           height: 30),
+            cornerRadius: 15)
+        badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.94)
+        badge.strokeColor = UIColor(hex: "#C084FC")
+        badge.lineWidth = 1.4
+        let targetPoint = point(forRow: target.r, col: target.c)
+        let verticalOffset = target.r <= 1 ? -tileSize * 0.72 : tileSize * 0.72
+        badge.position = CGPoint(x: 0, y: targetPoint.y + verticalOffset)
+        badge.zPosition = 760
+        let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        label.text = text
+        label.fontSize = 9.5
+        label.fontColor = UIColor(hex: "#F3E8FF")
+        label.verticalAlignmentMode = .center
+        label.horizontalAlignmentMode = .center
+        badge.addChild(label)
+        worldNode.addChild(badge)
+        badge.alpha = 0
+        badge.run(.fadeIn(withDuration: 0.10))
+        smashPreviewNodes.append(badge)
+
+        updateComboMeter()
+        Effects.haptic(.light)
+        UIAccessibility.post(notification: .announcement, argument: text)
+        Analytics.track("smash_target_previewed",
+                        properties: ["level": "\(levelNumber)",
+                                     "tier": tier.rawValue,
+                                     "row": "\(target.r)",
+                                     "column": "\(target.c)",
+                                     "affected": "\(analysis.affected.count)",
+                                     "objectives": "\(analysis.objectivePositions.count)",
+                                     "hazards": "\(analysis.hazardPositions.count)"])
+    }
+
+    func clearPlayerSmashPreview() {
+        for node in smashPreviewNodes {
+            node.removeAllActions()
+            node.removeFromParent()
+        }
+        smashPreviewNodes.removeAll()
+        smashPreviewTarget = nil
+    }
+
     /// Renders a faded outline on every tile that *would clear* if the player
     /// released the drag right now. Activating an existing special is treated
     /// as a successful preview too. No-op when the swap wouldn't match.
     func showGhostPreview(from a: Pos, to b: Pos) {
         guard grid[b.r][b.c] != nil else { return }
-        let swapResult = Engine.swapIfValid(grid, a, b)
-        guard swapResult.didSwap else { return }
-
-        var clears: Set<Pos>
-        if isSpecialActivationSwap(a, b) {
-            // Highlight the activation pair + the area the special would clear.
-            clears = previewClearsForSpecialSwap(a, b)
-        } else {
-            clears = Engine.findMatches(swapResult.grid)
-            clears = Engine.expandMatchesWithSpecials(swapResult.grid,
-                                                      clears,
-                                                      bigger: specialBlastIsExpanded)
-        }
+        guard let analysis = TacticalMoveEvaluator.analysis(
+            for: a, b,
+            in: grid,
+            config: levelConfig,
+            sugarRushCharged: sugarRushCharged) else { return }
+        let clears = analysis.affected
         guard !clears.isEmpty else { return }
 
         for p in clears {
@@ -231,8 +348,18 @@ extension GameScene {
             let outline = SKShapeNode(rectOf: CGSize(width: tileSize * 0.92,
                                                      height: tileSize * 0.92),
                                        cornerRadius: tileSize * 0.22)
-            outline.fillColor = UIColor.white.withAlphaComponent(0.18)
-            outline.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.92)
+            let highlight: UIColor
+            if analysis.hazardPositions.contains(p) {
+                highlight = UIColor(hex: "#FB923C")
+            } else if analysis.objectivePositions.contains(p) {
+                highlight = UIColor(hex: "#34D399")
+            } else if sugarRushCharged {
+                highlight = UIColor(hex: "#EC4899")
+            } else {
+                highlight = UIColor(hex: "#FACC15")
+            }
+            outline.fillColor = highlight.withAlphaComponent(0.18)
+            outline.strokeColor = highlight.withAlphaComponent(0.92)
             outline.lineWidth = 2
             outline.glowWidth = 2
             outline.position = pt
@@ -246,6 +373,69 @@ extension GameScene {
             ])))
             ghostNodes.append(outline)
         }
+
+        let points = clears.map { point(forRow: $0.r, col: $0.c) }
+        let center = CGPoint(
+            x: points.map(\.x).reduce(0, +) / CGFloat(max(1, points.count)),
+            y: points.map(\.y).reduce(0, +) / CGFloat(max(1, points.count)))
+        let text = tacticalReasonTitle(analysis.reason,
+                                       includesSugarRush: sugarRushCharged)
+        let badge = SKShapeNode(
+            rectOf: CGSize(width: min(size.width - 36, max(126, CGFloat(text.count) * 7.2)),
+                           height: 28),
+            cornerRadius: 14)
+        badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.90)
+        badge.strokeColor = sugarRushCharged
+            ? UIColor(hex: "#EC4899")
+            : UIColor.white.withAlphaComponent(0.35)
+        badge.lineWidth = 1.2
+        badge.position = CGPoint(x: center.x, y: center.y + tileSize * 0.72)
+        badge.zPosition = 750
+        badge.alpha = 0
+        let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        label.text = text
+        label.fontSize = 10
+        label.fontColor = sugarRushCharged
+            ? UIColor(hex: "#F9A8D4")
+            : UIColor(hex: "#FDE68A")
+        label.verticalAlignmentMode = .center
+        label.horizontalAlignmentMode = .center
+        badge.addChild(label)
+        worldNode.addChild(badge)
+        badge.run(.fadeIn(withDuration: 0.10))
+        ghostNodes.append(badge)
+    }
+
+    func tacticalReasonTitle(_ reason: TacticalMoveReason,
+                             includesSugarRush: Bool) -> String {
+        let base: String
+        switch reason {
+        case .specialCombo:
+            base = String(localized: "POWER COMBO")
+        case .objective(let count):
+            base = String(localized: "OBJECTIVE +\(count)")
+        case .hazard(let count):
+            base = count == 1
+                ? String(localized: "DEFUSES HAZARD")
+                : String(localized: "HAZARDS +\(count)")
+        case .createsSpecial(let special):
+            let name: String
+            switch special {
+            case .stripedRow, .stripedCol: name = String(localized: "STRIPE")
+            case .wrapped: name = String(localized: "WRAPPED")
+            case .colorBomb: name = String(localized: "COLOR BOMB")
+            case .bomb: name = String(localized: "BOMB")
+            case .fish: name = String(localized: "FISH")
+            }
+            base = String(localized: "CREATES") + " " + name
+        case .powerClear(let count):
+            base = String(localized: "CLEARS \(count)")
+        case .match:
+            base = String(localized: "MATCH")
+        }
+        return includesSugarRush
+            ? String(localized: "RUSH CROSS") + " • " + base
+            : base
     }
 
     func clearGhostPreview() {
@@ -255,57 +445,6 @@ extension GameScene {
         }
         ghostNodes.removeAll()
         ghostTarget = nil
-    }
-
-    func isSpecialActivationSwap(_ a: Pos, _ b: Pos) -> Bool {
-        let sa = grid[a.r][a.c]?.special
-        let sb = grid[b.r][b.c]?.special
-        if sa == .colorBomb || sb == .colorBomb { return true }
-        if sa != nil && sb != nil { return true }
-        return false
-    }
-
-    /// Conservative preview of what a special-activation swap will clear so
-    /// the ghost outlines roughly match the actual blast. Falls back to a
-    /// 3×3 around the swap if we can't infer a better region.
-    func previewClearsForSpecialSwap(_ a: Pos, _ b: Pos) -> Set<Pos> {
-        var clears: Set<Pos> = [a, b]
-        let sa = grid[a.r][a.c]?.special
-        let sb = grid[b.r][b.c]?.special
-        let colorA = grid[a.r][a.c]?.color
-        let colorB = grid[b.r][b.c]?.color
-
-        if sa == .colorBomb, let color = colorB {
-            for r in 0..<rows {
-                for c in 0..<cols where grid[r][c]?.color == color {
-                    clears.insert(Pos(r: r, c: c))
-                }
-            }
-        }
-        if sb == .colorBomb, let color = colorA {
-            for r in 0..<rows {
-                for c in 0..<cols where grid[r][c]?.color == color {
-                    clears.insert(Pos(r: r, c: c))
-                }
-            }
-        }
-        if sa == .stripedRow || sb == .stripedRow {
-            for c in 0..<cols { clears.insert(Pos(r: a.r, c: c)) }
-        }
-        if sa == .stripedCol || sb == .stripedCol {
-            for r in 0..<rows { clears.insert(Pos(r: r, c: a.c)) }
-        }
-        if sa == .wrapped || sb == .wrapped || sa == .bomb || sb == .bomb {
-            for dr in -1...1 {
-                for dc in -1...1 {
-                    let p = Pos(r: a.r + dr, c: a.c + dc)
-                    if p.r >= 0, p.r < rows, p.c >= 0, p.c < cols, grid[p.r][p.c] != nil {
-                        clears.insert(p)
-                    }
-                }
-            }
-        }
-        return clears
     }
 
     func isAdjacent(_ a: Pos, _ b: Pos) -> Bool {
@@ -343,7 +482,8 @@ extension GameScene {
     func showSpecialBlastPreview(at p: Pos) {
         clearSpecialBlastPreview()
         guard grid[p.r][p.c]?.special != nil else { return }
-        let area = Engine.expandMatchesWithSpecials(grid, [p], bigger: specialBlastIsExpanded)
+        var area = Engine.expandMatchesWithSpecials(grid, [p], bigger: specialBlastIsExpanded)
+        area = addingObjectiveFishTargets(to: area)
         for q in area where !(q.r == p.r && q.c == p.c) {
             guard nodes[q.r][q.c] != nil else { continue }
             let hl = SKShapeNode(rectOf: CGSize(width: tileSize * 0.9, height: tileSize * 0.9),

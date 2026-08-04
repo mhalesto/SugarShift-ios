@@ -55,9 +55,11 @@ extension GameScene {
         let lines = [
             String(localized: "Match 4 → Striped (clears a line)"),
             String(localized: "Match 5 → Color Bomb (one color)"),
-            String(localized: "T or L → Wrapped (big blast)"),
-            String(localized: "Swap two power-ups = combo!"),
-            String(localized: "2 Color Bombs = clear the board")
+            String(localized: "T or L → Wrapped (5x5 blast)"),
+            String(localized: "2x2 square → Fish (seeks your goal)"),
+            String(localized: "Every power-up pair has a unique combo"),
+            String(localized: "Smash costs 50, 75, or 100 — choose a tier, preview, then confirm"),
+            String(localized: "Goal moves build Flow; Flow 3 earns an aimed Sugar Rush cross")
         ]
         showModal(title: String(localized: "Specials & Combos"),
                   message: lines.joined(separator: "\n"),
@@ -657,7 +659,7 @@ extension GameScene {
         overlay.addChild(scrim)
 
         let cardW = min(size.width - 36, 340)
-        let cardH: CGFloat = 292
+        let cardH: CGFloat = 340
         let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 20)
         card.fillColor = UIColor(white: 1, alpha: 0.98)
         card.strokeColor = UIColor(hex: "#CBD5E1")
@@ -726,9 +728,16 @@ extension GameScene {
         }
 
         let warningText = snapshot.warnings.isEmpty ? String(localized: "No balance warnings") : snapshot.warnings.joined(separator: ", ")
-        addLabel(warningText, x: 0, y: -cardH / 2 + 78, size: 10.5,
+        addLabel(warningText, x: 0, y: -cardH / 2 + 102, size: 10.5,
                  color: snapshot.warnings.isEmpty ? UIColor(hex: "#10B981") : UIColor(hex: "#B45309"),
                  align: .center)
+
+        let replay = testerButton(title: String(localized: "Replay seed…"), name: "testerReplaySeed",
+                                  fill: UIColor(hex: "#FEF3C7"),
+                                  textColor: UIColor(hex: "#92400E"),
+                                  width: 200)
+        replay.position = CGPoint(x: 0, y: -cardH / 2 + 74)
+        card.addChild(replay)
 
         let prev = testerButton(title: String(localized: "Prev"), name: levelNumber > 1 ? "testerPrev" : "testerDisabled",
                                 fill: levelNumber > 1 ? UIColor(hex: "#E0F2FE") : UIColor(white: 0, alpha: 0.06),
@@ -791,6 +800,9 @@ extension GameScene {
             case "testerNext":
                 jumpToTesterLevel(levelNumber + 1)
                 return
+            case "testerReplaySeed":
+                promptForReplaySeed()
+                return
             case "testerClose":
                 overlay.run(.sequence([.fadeOut(withDuration: 0.12), .removeFromParent()]))
                 levelTesterOverlay = nil
@@ -802,6 +814,30 @@ extension GameScene {
                 hit = node.parent
             }
         }
+    }
+
+    /// Debug-only: paste a `seed` value from `level_start` analytics to
+    /// relaunch this level with that exact opening board.
+    func promptForReplaySeed() {
+        #if DEBUG
+        guard let controller = view?.window?.rootViewController else { return }
+        let alert = UIAlertController(title: "Replay seed",
+                                      message: "Paste the seed from level_start analytics. Current: \(levelAttemptSeed)",
+                                      preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "\(self.levelAttemptSeed)"
+            field.keyboardType = .numberPad
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Replay", style: .default) { [weak self, weak alert] _ in
+            guard let self,
+                  let text = alert?.textFields?.first?.text,
+                  let seed = UInt64(text.trimmingCharacters(in: .whitespaces)) else { return }
+            self.debugReplaySeed = seed
+            self.jumpToTesterLevel(self.levelNumber)
+        })
+        controller.present(alert, animated: true)
+        #endif
     }
 
     func jumpToTesterLevel(_ level: Int) {
@@ -827,6 +863,9 @@ extension GameScene {
     }
 
     func spawnConfetti() {
+        let now = CACurrentMediaTime()
+        guard now - lastConfettiAt > 3.0 else { return }
+        lastConfettiAt = now
         let confetti = Effects.makeConfetti(width: size.width)
         confetti.position = CGPoint(x: 0, y: size.height / 2 + 20)
         addChild(confetti)
@@ -836,6 +875,14 @@ extension GameScene {
     func applyCollapseAndRefill() {
         let oldGrid = grid
         let idToNode = nodeIdMap(in: oldGrid)
+        var idToOldPosition: [String: Pos] = [:]
+        for r in 0..<oldGrid.count {
+            for c in 0..<oldGrid[r].count {
+                if let id = oldGrid[r][c]?.id {
+                    idToOldPosition[id] = Pos(r: r, c: c)
+                }
+            }
+        }
         let settledGrid = Engine.collapseAndRefill(grid,
                                                    colors: palette,
                                                    mask: levelConfig.layout.mask,
@@ -928,19 +975,59 @@ extension GameScene {
 
         var newNodes: [[SKNode?]] = Array(repeating: Array(repeating: nil, count: cols), count: rows)
 
-        let fallDur: TimeInterval = 0.22
+        let cascadeSpeed = min(1.45, 1.0 + Double(max(0, cascadeDepth - 1)) * 0.09)
+        var latestLanding: TimeInterval = 0
+        var landingPan: Float = 0
+
+        func fallDuration(rows distance: Int, isNew: Bool) -> TimeInterval {
+            let base = isNew ? 0.14 : 0.10
+            let perRow = isNew ? 0.027 : 0.023
+            return min(0.36, base + Double(max(1, distance)) * perRow) / cascadeSpeed
+        }
+
+        func landingAction(to destination: CGPoint,
+                           duration: TimeInterval,
+                           delay: TimeInterval) -> SKAction {
+            let fall = SKAction.move(to: destination, duration: duration)
+            fall.timingMode = .easeIn
+            if Persistence.reduceMotion {
+                return .sequence([.wait(forDuration: delay), fall])
+            }
+            return .sequence([
+                .wait(forDuration: delay),
+                fall,
+                .group([.scaleX(to: 1.07, duration: 0.040),
+                        .scaleY(to: 0.91, duration: 0.040)]),
+                .group([.scaleX(to: 1.0, duration: 0.075),
+                        .scaleY(to: 1.0, duration: 0.075)])
+            ])
+        }
 
         for r in 0..<rows {
             for c in 0..<cols {
                 guard let cell = newGrid[r][c] else { continue }
+                let columnDelay = Persistence.reduceMotion ? 0 : TimeInterval(c) * 0.012
+                let destination = point(forRow: r, col: c)
                 if let existing = idToNode[cell.id] {
                     newNodes[r][c] = existing
-                    existing.run(.move(to: point(forRow: r, col: c), duration: fallDur))
+                    let old = idToOldPosition[cell.id] ?? Pos(r: 0, c: c)
+                    let distance = abs(r - old.r) + abs(c - old.c)
+                    if distance == 0 {
+                        existing.position = destination
+                    } else {
+                        let duration = fallDuration(rows: distance, isNew: false)
+                        existing.run(landingAction(to: destination,
+                                                   duration: duration,
+                                                   delay: columnDelay))
+                        if columnDelay + duration > latestLanding {
+                            latestLanding = columnDelay + duration
+                            landingPan = soundPan(at: destination)
+                        }
+                    }
                 } else {
                     let node = makeTileNode(for: cell)
-                    let spawnY = size.height / 2 + tileSize
-                    let dest = point(forRow: r, col: c)
-                    node.position = CGPoint(x: dest.x, y: spawnY)
+                    let spawnY = size.height / 2 + tileSize * (1.2 + CGFloat(c % 3) * 0.12)
+                    node.position = CGPoint(x: destination.x, y: spawnY)
                     worldNode.addChild(node)
 
                     // Stardust trail behind the falling tile — turns the refill
@@ -950,8 +1037,11 @@ extension GameScene {
                     trail.zPosition = -0.5
                     node.addChild(trail)
 
+                    let duration = fallDuration(rows: r + 2, isNew: true)
                     node.run(.sequence([
-                        .move(to: dest, duration: fallDur),
+                        landingAction(to: destination,
+                                      duration: duration,
+                                      delay: columnDelay),
                         .run { [weak trail] in
                             // Stop emitting on landing, then fade the lingering particles.
                             trail?.particleBirthRate = 0
@@ -960,6 +1050,10 @@ extension GameScene {
                         }
                     ]))
                     newNodes[r][c] = node
+                    if columnDelay + duration > latestLanding {
+                        latestLanding = columnDelay + duration
+                        landingPan = soundPan(at: destination)
+                    }
                 }
             }
         }
@@ -968,8 +1062,11 @@ extension GameScene {
             refreshNode(at: p)
         }
 
-        run(.wait(forDuration: fallDur + 0.02)) { [weak self] in
-            self?.resolveCascade()
+        run(.wait(forDuration: latestLanding + (Persistence.reduceMotion ? 0.02 : 0.10))) { [weak self] in
+            guard let self else { return }
+            Audio.shared.play(.landing, pan: landingPan)
+            Effects.haptic(.soft, intensity: 0.24)
+            self.resolveCascade()
         }
     }
 

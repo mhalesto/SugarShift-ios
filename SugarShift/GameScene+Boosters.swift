@@ -168,6 +168,7 @@ extension GameScene {
             Effects.notify(.warning)
             return
         }
+        if smashTargeting { cancelPlayerSmashTargeting() }
         // If already in a mode and the same booster is tapped again, cancel.
         if (label == "Hammer" && boosterMode == .hammer) ||
            (label == "Swap"   && boosterMode == .swap) {

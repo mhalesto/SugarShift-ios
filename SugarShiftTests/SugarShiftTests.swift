@@ -455,6 +455,20 @@ struct SugarShiftTests {
         }
     }
 
+    @Test func clearBlockerGoalsNeverFightARisingTide() {
+        // "Clear every blocker" only closes if the board stops adding them.
+        // Syrup coats a fresh row every N moves, so a tick landing after the
+        // player empties the board reopens a goal they had already met.
+        for n in 1...Levels.count {
+            let config = Levels.config(for: n)
+            guard case .clearBlockers = config.goal else { continue }
+            #expect(config.layout.syrupTickEvery == nil,
+                    "Level \(n) asks to clear all blockers while syrup keeps adding them")
+            #expect(config.layout.blockerCount > 0,
+                    "Level \(n) asks to clear blockers it never seeds")
+        }
+    }
+
     @Test func ringShapeUsesThreeTileInnerLane() {
         let mask = Levels.ring9()
 
@@ -1496,6 +1510,44 @@ struct SugarShiftTests {
         #expect(a.count == 3 && Set(a).count == 3)
     }
 
+    @Test func towerPerkStacksAreCapped() {
+        let week = "2100-W01"
+        let maxed = Array(repeating: TowerPerk.extraMoves, count: TowerPerk.maxStacks)
+
+        // A maxed perk stops being offered, so the draft keeps presenting a
+        // live decision instead of the same dominant card.
+        let choices = TowerMode.perkChoices(weekKey: week, floor: 6, owned: maxed)
+        #expect(!choices.contains(.extraMoves))
+        #expect(choices.count == 3 && Set(choices).count == 3)
+        // With nothing owned the full table is still on offer.
+        #expect(TowerMode.perkChoices(weekKey: week, floor: 6, owned: []).count == 3)
+        // Every perk maxed reopens the table rather than drafting nothing.
+        let allMaxed = TowerPerk.allCases.flatMap {
+            Array(repeating: $0, count: TowerPerk.maxStacks)
+        }
+        #expect(TowerMode.perkChoices(weekKey: week, floor: 6, owned: allMaxed).count == 3)
+
+        // Extra copies past the cap buy nothing, so the escalation curve holds:
+        // a hoarded stack cannot outrun the shrinking move budget.
+        let capped = TowerMode.floorConfig(weekKey: week, floor: 12, perks: maxed)
+        let hoarded = TowerMode.floorConfig(
+            weekKey: week, floor: 12,
+            perks: Array(repeating: TowerPerk.extraMoves, count: 12))
+        #expect(capped.moves == hoarded.moves)
+        let plain = TowerMode.floorConfig(weekKey: week, floor: 12, perks: [])
+        #expect(capped.moves == plain.moves + 3 * TowerPerk.maxStacks)
+
+        // The same cap applies to the other stacking perks.
+        let bombs = Array(repeating: TowerPerk.startBomb, count: 9)
+        #expect(TowerMode.floorConfig(weekKey: week, floor: 12, perks: bombs)
+                    .layout.startingBombs == TowerPerk.maxStacks)
+        let gold = Array(repeating: TowerPerk.goldRush, count: 9)
+        #expect(TowerMode.coinReward(floor: 4, perks: gold)
+                == TowerMode.coinReward(floor: 4,
+                                        perks: Array(repeating: TowerPerk.goldRush,
+                                                     count: TowerPerk.maxStacks)))
+    }
+
     @Test func towerCoinRewardScalesWithMilestonesAndGoldRush() {
         #expect(TowerMode.coinReward(floor: 1, perks: []) == 40)
         #expect(TowerMode.coinReward(floor: 5, perks: []) == 180)
@@ -1532,6 +1584,103 @@ struct SugarShiftTests {
         #expect(TowerMode.activeRun() == nil)
         // Floor 7 was in progress, so 6 were cleared — beats the old best of 3.
         #expect(Persistence.towerBestFloor == 6)
+    }
+
+    @Test func towerAbandonedFloorEndsTheRun() {
+        let d = UserDefaults.standard
+        let savedBest = Persistence.towerBestFloor
+        let savedRun = TowerMode.activeRun()
+        defer {
+            Persistence.towerBestFloor = savedBest
+            if let savedRun {
+                TowerMode.save(savedRun)
+            } else {
+                for key in [Persistence.K.towerFloor, Persistence.K.towerPerks,
+                            Persistence.K.towerRunCoins, Persistence.K.towerWeek,
+                            Persistence.K.towerFloorLive] {
+                    d.removeObject(forKey: key)
+                }
+            }
+        }
+
+        // Between floors the run resumes untouched — that is what keeps
+        // "Take a break (run saved)" an honest offer.
+        var run = TowerMode.startNewRun()
+        run.floor = 5
+        TowerMode.save(run)
+        Persistence.towerBestFloor = 0
+        #expect(TowerMode.resume() == TowerResume(run: run, abandonedFloor: nil))
+        #expect(TowerMode.activeRun()?.floor == 5)
+
+        // Spending a move on the floor commits the player to finishing it.
+        TowerMode.markFloorInProgress()
+        #expect(TowerMode.activeRun()?.floorInProgress == true)
+
+        // Walking out of that floor is a loss: the run ends and only the four
+        // floors actually cleared count toward the best.
+        let resumed = TowerMode.resume()
+        #expect(resumed.run == nil)
+        #expect(resumed.abandonedFloor == 5)
+        #expect(TowerMode.activeRun() == nil)
+        #expect(Persistence.towerBestFloor == 4)
+
+        // The flag must not leak into the next run.
+        let fresh = TowerMode.startNewRun()
+        #expect(fresh.floorInProgress == false)
+        #expect(TowerMode.resume().run?.floorInProgress == false)
+    }
+
+    @Test func towerFloorGoalsRotateAndStayFeasible() {
+        let week = "2100-W01"
+        var goals: Set<String> = []
+        for floor in 1...30 {
+            let config = TowerMode.floorConfig(weekKey: week, floor: floor, perks: [])
+            goals.insert(config.goal.title)
+
+            switch config.goal {
+            case .score:
+                #expect(config.target > 0)
+            case .clearBlockers:
+                // "Clear every blocker" must be a target that stops moving:
+                // no rising syrup, no spreading chocolate, and no three-hit
+                // crates eating a shrinking move budget.
+                #expect(config.layout.blockerCount > 0)
+                #expect(config.layout.syrupTickEvery == nil)
+                #expect(config.layout.chocolateCount == 0)
+                #expect(config.layout.crateCount == 0)
+            case .collectColor(let index, let count):
+                #expect(index >= 0 && index < config.colors)
+                // Sized off the move budget: demanding enough to use most of
+                // it, bounded well inside what a board of this size yields.
+                #expect(count > 0 && count <= config.moves * 3)
+            case .createSpecials(let count):
+                #expect(count > 0 && count <= max(1, config.moves / 3))
+            default:
+                Issue.record("Tower floor \(floor) got an unsupported goal")
+            }
+        }
+        // The point of the rotation: a climb is not twenty score attacks.
+        #expect(goals.count >= 4)
+
+        // A score floor is only a fight if the board can produce the points.
+        // The move budget shrinks as floors rise, so an unbounded target turns
+        // "hard" into "arithmetically impossible" — the simulator caught five
+        // such floors before this was capped. Guarding points-per-move here
+        // keeps that regression cheap to catch without running the bot.
+        for floor in 1...40 {
+            let config = TowerMode.floorConfig(weekKey: week, floor: floor, perks: [])
+            guard case .score = config.goal else { continue }
+            let pointsPerMove = Double(config.target) / Double(max(1, config.moves))
+            #expect(pointsPerMove <= 420,
+                    "Tower floor \(floor) needs \(Int(pointsPerMove)) points a move")
+        }
+
+        // Still deterministic per (week, floor) so the weekly tower is shared.
+        #expect(TowerMode.floorConfig(weekKey: week, floor: 9, perks: []).goal
+                == TowerMode.floorConfig(weekKey: week, floor: 9, perks: []).goal)
+        // Floors 1-2 stay a plain score climb so the ladder teaches itself.
+        #expect(TowerMode.floorConfig(weekKey: week, floor: 1, perks: []).goal == .score)
+        #expect(TowerMode.floorConfig(weekKey: week, floor: 2, perks: []).goal == .score)
     }
 
     // MARK: - Daily missions

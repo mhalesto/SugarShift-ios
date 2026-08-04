@@ -1308,8 +1308,10 @@ final class GameScene: SKScene {
         let usefulMoveScore = openingMoveQualityTarget()
         dailyChallengeRun = initialDailyChallenge
         isDailyChallengeRun = dailyChallengeRun != nil
+        // `resume` ends any run whose floor was walked out on, so a fresh climb
+        // starts here rather than the abandoned floor being replayed for free.
         towerRun = levelNumber == Levels.towerLevel
-            ? (TowerMode.activeRun() ?? TowerMode.startNewRun())
+            ? (TowerMode.resume().run ?? TowerMode.startNewRun())
             : nil
         var requestedSeed = dailyChallengeRun?.seed
             ?? LevelSeed.liveAttempt(level: levelNumber)
@@ -1356,7 +1358,8 @@ final class GameScene: SKScene {
             Effects.showComboBanner(text: String(localized: "FLOOR \(run.floor)"),
                                     color: UIColor(hex: "#A855F7"),
                                     in: self)
-            let headStacks = run.perks.filter { $0 == .headStart }.count
+            let headStacks = min(TowerPerk.maxStacks,
+                                 run.perks.filter { $0 == .headStart }.count)
             if headStacks > 0 {
                 addSmashCharge(min(100, 40 * headStacks), source: "tower_perk")
             }

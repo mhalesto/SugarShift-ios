@@ -458,6 +458,7 @@ extension GameScene {
         turnConsumesMove = true
         bossDamageAppliedThisTurn = false
         movesLeft -= 1
+        commitTowerFloorIfNeeded()
         updateComboMeter()
 
         var affected = Engine.playerSmashFootprint(in: grid,

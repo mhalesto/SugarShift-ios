@@ -60,6 +60,7 @@ enum Persistence {
         static let towerPerks      = "ss.towerPerks"
         static let towerRunCoins   = "ss.towerRunCoins"
         static let towerBestFloor  = "ss.towerBestFloor"
+        static let towerFloorLive  = "ss.towerFloorInProgress"
     }
 
     /// Whether the player has opted into Game Center sign-in. Defaults to true

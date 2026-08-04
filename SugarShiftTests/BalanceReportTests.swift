@@ -56,4 +56,39 @@ final class BalanceReportTests: XCTestCase {
         XCTAssertGreaterThan(avgWin, 0.30, "Campaign far too hard — check balancedTarget")
         XCTAssertLessThan(avgWin, 0.98, "Campaign trivially easy — check balancedTarget")
     }
+
+    /// The tower rotates objectives per floor, so each floor needs the same
+    /// "is this actually winnable" evidence the campaign gets. The bot is
+    /// greedy, so the guard is deliberately loose: it catches a floor whose
+    /// goal the board can never satisfy, not a floor that is merely hard.
+    func testTowerFloorBalanceReport() {
+        let week = TowerMode.weekKey(for: Date(timeIntervalSince1970: 4_102_444_800))
+        let topFloor = 20
+        var lines = ["floor  win%  stars  movesLeft  moves  target  goal"]
+        var unwinnableEarly: [Int] = []
+
+        for floor in 1...topFloor {
+            let config = TowerMode.floorConfig(weekKey: week, floor: floor, perks: [])
+            let summary = LevelSimulationBot.simulate(config: config,
+                                                      attempts: 10,
+                                                      seed: 0x70B3 &+ UInt64(floor))
+            let winRate = summary.winRate
+            lines.append(String(format: "%5d  %4.0f  %5.1f  %7.1f  %5d  %6d  %@",
+                                floor, winRate * 100, summary.averageStars,
+                                summary.averageMovesLeft, config.moves, config.target,
+                                config.goal.title))
+            // Floors 1-10 are the part of the climb a player should reliably
+            // reach; a 0% bot win there means the goal, not the difficulty,
+            // is wrong.
+            if floor <= 10, winRate == 0 { unwinnableEarly.append(floor) }
+        }
+
+        let attachment = XCTAttachment(string: lines.joined(separator: "\n"))
+        attachment.name = "tower-balance-report.txt"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        XCTAssertTrue(unwinnableEarly.isEmpty,
+                      "Tower floors with an unreachable goal: \(unwinnableEarly)")
+    }
 }

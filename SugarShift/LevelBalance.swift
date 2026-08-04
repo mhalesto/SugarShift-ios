@@ -185,7 +185,10 @@ enum LevelBalanceAnalyzer {
         case .score:
             return config.target > 0
         case .clearBlockers:
-            return config.layout.blockerCount > 0
+            // Rising syrup coats a fresh row every N moves, so "clear every
+            // blocker" can be undone by the tick after the player empties the
+            // board — the goal has to stop moving before it can be closed.
+            return config.layout.blockerCount > 0 && config.layout.syrupTickEvery == nil
         case .collectColor(_, let count):
             return count <= max(playable, config.moves * 4)
         case .createSpecials(let count):

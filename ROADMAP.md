@@ -1,5 +1,101 @@
 # SugarShift Improvement Roadmap
 
+## Stakes & Honest Choices Pass (completed)
+
+The previous passes gave the game depth; this one makes that depth mean
+something. Every item here removes a way the game was quietly letting the
+player off the hook, or a choice that only looked like a choice.
+
+**Sugar Tower — the run is now a real run**
+
+- **Walking out of a floor is a loss.** The mode's entire premise is "one loss
+  ends the run", but a floor left mid-play simply waited to be replayed, so
+  force-quitting a doomed floor dodged the only rule that mattered.
+  `TowerRun.floorInProgress` is set the moment a move is spent on a floor and
+  cleared when the floor resolves; `TowerMode.resume()` ends any run that comes
+  back with the flag still set, and the tower card reports "Left on Floor N".
+  Between floors the flag is clear, which is what keeps "Take a break (run
+  saved)" an honest offer. This closes the follow-up the Tower pass left open.
+- **Floors have objectives, not just score bars.** Every floor was "reach a
+  score", so a twenty-floor climb was twenty rounds of the same fight.
+  `TowerMode.floorGoal` now rotates score, clear-the-blockers, collect-a-colour,
+  and create-specials across the ladder. It is pure in the values
+  `floorConfig` already computed, so a floor can never ask for something its
+  own board does not seed.
+- **Goals that stop moving.** `clearBlockers` is withheld from floors carrying
+  rising syrup or spreading chocolate (the count never settles) and from crate
+  floors (three hits each against a shrinking move budget). Floors 1-2 stay a
+  plain score climb so the ladder teaches itself.
+- **The perk draft is a decision again.** Perks stacked without limit, so
+  taking Sugar Legs every time it appeared outran the escalation curve — the
+  move budget grew faster than the target did and the tower got *easier* the
+  higher you climbed. Stacks now cap at 3 (`TowerPerk.maxStacks`), capped perks
+  drop off the draft table, and each card shows its own `×n/3`. The choice is
+  now depth versus breadth instead of one correct answer.
+- **Drafting with the next floor in view.** The draft card and the tower card
+  both name the upcoming floor's objective, so "Bigger Blasts" can be weighed
+  against "clear the blockers" instead of picked blind.
+- **The score curve no longer outruns the board.** Adding
+  `testTowerFloorBalanceReport` (the deterministic bot over floors 1-20, with a
+  per-floor win/stars/moves attachment) immediately exposed a pre-existing
+  break: **floors 10, 11, 15, 16 and 20 all won 0% of attempts.** The target
+  grew a flat 450 a floor while the move budget shrank toward 14, so floor 20
+  demanded ~700 points a move — arithmetically impossible, not hard.
+  Points-per-move now ramps to a **ceiling** (`min(250, 55 + floor * 14)`)
+  rather than growing without bound; because the tower has no last floor, any
+  per-floor increase against a floored move budget would eventually break
+  again. Escalation above the plateau comes from the mechanic bands and the
+  shrinking budget instead. No floor sits at 0% any more.
+- **Objectives sized to the real clear rate.** The first retune left objective
+  floors finishing with a third of the budget untouched (floor 19 won with 12.5
+  of 17 moves spare). Counts are now pegged to the rate the bot actually
+  sustains — a little over two target tiles a move, a special roughly every
+  second move — so an objective floor is a fight rather than a formality.
+- **Perks can't cancel themselves.** Targets and objective counts key off the
+  *base* move budget, never the perked one; otherwise drafting Sugar Legs would
+  raise the very bar it was bought to clear.
+- A fast pure guard (`pointsPerMove <= 420` across floors 1-40) catches this
+  class of regression without paying for a simulator run.
+
+**Campaign fairness**
+
+- **`clearBlockers` can no longer fight a rising tide.** The same moving-target
+  flaw was live in the campaign generator, and the new invariant caught real
+  levels: syrup coats a fresh row every N moves, so a tick landing after the
+  player empties the board reopens a goal they had already met.
+  `Levels.defaultGoal` now gives those levels their archetype's alternate goal,
+  `LevelBalanceAnalyzer.goalLooksFeasible` rejects the pairing (which puts it
+  under the existing all-200-levels "no warnings" assertion), and
+  `clearBlockerGoalsNeverFightARisingTide` states the invariant directly so a
+  future generator change fails loudly.
+
+### Next up
+
+- **Tower difficulty is still spiky rather than smooth.** After the retune the
+  simulated curve runs 100% through floor 9, then oscillates — floors 10/15/20
+  (all score floors) land at 60/40/50% while the objective floors between them
+  sit at 90-100%. That is largely a property of the bot: score floors are where
+  greedy play is optimal and objective floors are where it is weakest, so the
+  spread overstates the real unevenness. A run ending around floors 15-20 is a
+  defensible roguelite shape; smoothing the adjacent-floor swing wants human
+  playtests, because pushing the numbers around against a greedy bot risks
+  over-fitting to it.
+- Score targets plateau by design, so the displayed target dips slightly (4750
+  → 4500) where the move budget steps down. Difficulty per move is flat across
+  that step, but it is worth confirming players don't read the smaller number
+  as an easier floor.
+- Tower floors above 20 are unverified by simulation; extend the report once
+  the bot handles long-horizon objective routing well enough for the numbers to
+  mean something.
+- Per-level campaign objective tuning still needs human playtests — the bot is
+  greedy and its 0%-win levels are mostly bot blind spots, not unfair design.
+- **The campaign now simulates at 85.9% average bot win**, not the ~44% quoted
+  in the older Gameplay Pass notes below. The bot gained Flow, Sugar Rush and
+  the tiered player Smash along with real players, and it uses them well; only
+  levels 38 and 195 still win 0%. Whether the campaign has become genuinely
+  too soft or the bot simply got good at it is the question a playtest pass
+  should answer before any targets move.
+
 ## Precision Smash Command Pass (completed)
 
 - **Choose power instead of wasting it:** when multiple Smash tiers are

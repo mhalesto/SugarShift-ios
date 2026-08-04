@@ -218,6 +218,7 @@ extension GameScene {
             nodes[a.r][a.c] = nodeB
             nodes[b.r][b.c] = nodeA
             movesLeft -= 1
+            commitTowerFloorIfNeeded()
             Analytics.track("special_combo_used",
                             properties: ["level": "\(levelNumber)",
                                          "first": combo.first.rawValue,
@@ -240,6 +241,7 @@ extension GameScene {
             nodes[a.r][a.c] = nodeB
             nodes[b.r][b.c] = nodeA
             movesLeft -= 1
+            commitTowerFloorIfNeeded()
             Analytics.track("color_bomb_used", properties: ["level": "\(levelNumber)"])
             Effects.haptic(.medium)
             Audio.shared.play(.swapClick)
@@ -256,6 +258,7 @@ extension GameScene {
             nodes[a.r][a.c] = nodeB
             nodes[b.r][b.c] = nodeA
             movesLeft -= 1
+            commitTowerFloorIfNeeded()
             Effects.haptic(.light)
             Audio.shared.play(.swapClick)
             nodeA?.run(.move(to: posB, duration: dur))

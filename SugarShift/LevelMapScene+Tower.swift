@@ -50,7 +50,9 @@ extension LevelMapScene {
         towerCard?.removeFromParent()
         let overlay = makeOverlay(name: "towerCard")
         let cardW = min(size.width - 34, 344)
-        let cardH: CGFloat = 400
+        // Tall enough for the six-row in-progress state (week, best, floor,
+        // next objective, perks, coins) without crowding the rules line.
+        let cardH: CGFloat = 452
         let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 22)
         card.fillColor = UIColor(white: 1, alpha: 0.97)
         card.strokeColor = UIColor(hex: "#A855F7").withAlphaComponent(0.6)
@@ -62,7 +64,9 @@ extension LevelMapScene {
                      subtitle: String(localized: "Climb. Draft perks. One loss ends the run."),
                      to: card, y: cardH / 2 - 36)
 
-        let run = TowerMode.activeRun()
+        // Ends the run first if the last session walked out of a live floor.
+        let resume = TowerMode.resume()
+        let run = resume.run
         let best = Persistence.towerBestFloor
         let week = TowerMode.weekKey()
 
@@ -73,11 +77,18 @@ extension LevelMapScene {
         if let run {
             rows.append((String(localized: "Run in progress"),
                          String(localized: "Floor \(run.floor)")))
+            rows.append((String(localized: "Next floor"),
+                         TowerMode.floorConfig(weekKey: run.weekKey,
+                                               floor: run.floor,
+                                               perks: run.perks).goal.title))
             let perksText = run.perks.isEmpty
                 ? String(localized: "No perks yet")
                 : run.perks.map(\.emoji).joined(separator: " ")
             rows.append((String(localized: "Perks"), perksText))
             rows.append((String(localized: "Run coins"), "\(run.coinsEarned)"))
+        } else if let abandoned = resume.abandonedFloor {
+            rows.append((String(localized: "Last run"),
+                         String(localized: "Left on Floor \(abandoned)")))
         }
         var y = cardH / 2 - 112
         for row in rows {
@@ -136,7 +147,7 @@ extension LevelMapScene {
             case "towerClimb":
                 towerCard?.removeFromParent()
                 towerCard = nil
-                if TowerMode.activeRun() == nil { TowerMode.startNewRun() }
+                if TowerMode.resume().run == nil { TowerMode.startNewRun() }
                 onLevelSelected?(Levels.towerLevel, nil)
                 return
             case "towerCardClose":

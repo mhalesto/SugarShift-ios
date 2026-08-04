@@ -4,8 +4,20 @@ import SpriteKit
 // loss) and the relaunch path between floors.
 extension GameScene {
 
+    /// Locks the player into the floor the moment they spend a move on it.
+    /// From here, leaving without resolving the floor ends the run — otherwise
+    /// force-quitting a doomed floor would dodge the mode's one-loss rule.
+    func commitTowerFloorIfNeeded() {
+        guard !levelEnded, var run = towerRun, !run.floorInProgress else { return }
+        run.floorInProgress = true
+        towerRun = run
+        TowerMode.markFloorInProgress()
+    }
+
     func endTowerFloor(won: Bool) {
         guard var run = towerRun else { return }
+        // The floor resolved, so it is no longer abandonable either way.
+        run.floorInProgress = false
         Analytics.track(won ? "tower_floor_win" : "tower_floor_fail",
                         properties: ["week": run.weekKey,
                                      "floor": "\(run.floor)",
@@ -45,7 +57,7 @@ extension GameScene {
         scrim.strokeColor = .clear
         overlay.addChild(scrim)
 
-        let cardSize = CGSize(width: min(size.width - 36, 340), height: 430)
+        let cardSize = CGSize(width: min(size.width - 36, 340), height: 466)
         let card = SKShapeNode(rectOf: cardSize, cornerRadius: 24)
         card.fillColor = UIColor(white: 1, alpha: 0.97)
         card.strokeColor = UIColor(hex: "#A855F7").withAlphaComponent(0.6)
@@ -89,13 +101,27 @@ extension GameScene {
         coinsLabel.position = CGPoint(x: 0, y: top - 64)
         card.addChild(coinsLabel)
 
+        // Naming the next floor's objective is what turns the draft into a
+        // decision — Bigger Blasts reads very differently before "clear the
+        // blockers" than before "reach a score".
+        let nextGoal = TowerMode.floorConfig(weekKey: run.weekKey,
+                                             floor: run.floor,
+                                             perks: run.perks).goal
+        let goalLabel = towerLabel(String(localized: "Floor \(run.floor) objective: \(nextGoal.title)"),
+                                   size: 12, color: UIColor(hex: "#7C3AED"),
+                                   weight: "AvenirNext-DemiBold")
+        goalLabel.position = CGPoint(x: 0, y: top - 86)
+        card.addChild(goalLabel)
+
         let prompt = towerLabel(String(localized: "Draft a perk for the climb:"),
                                 size: 14, color: UIColor(hex: "#0F172A"))
-        prompt.position = CGPoint(x: 0, y: top - 96)
+        prompt.position = CGPoint(x: 0, y: top - 112)
         card.addChild(prompt)
 
-        let choices = TowerMode.perkChoices(weekKey: run.weekKey, floor: clearedFloor)
-        var y = top - 148
+        let choices = TowerMode.perkChoices(weekKey: run.weekKey,
+                                            floor: clearedFloor,
+                                            owned: run.perks)
+        var y = top - 166
         for perk in choices {
             let row = SKShapeNode(rectOf: CGSize(width: cardSize.width - 40, height: 62),
                                   cornerRadius: 16)
@@ -112,7 +138,15 @@ extension GameScene {
             emoji.position = CGPoint(x: -cardSize.width / 2 + 44, y: 0)
             row.addChild(emoji)
 
-            let name = towerLabel(perk.title, size: 14, color: UIColor(hex: "#0F172A"))
+            // Owned stacks are shown because the cap is what makes the draft a
+            // choice — a player needs to see when a card is one away from full.
+            // The title is already localized and the badge is bare numerals,
+            // so this composition needs no catalog entry of its own.
+            let owned = run.perks.filter { $0 == perk }.count
+            let stackText = owned > 0
+                ? "\(perk.title)  ×\(owned)/\(TowerPerk.maxStacks)"
+                : perk.title
+            let name = towerLabel(stackText, size: 14, color: UIColor(hex: "#0F172A"))
             name.horizontalAlignmentMode = .left
             name.position = CGPoint(x: -cardSize.width / 2 + 70, y: 11)
             row.addChild(name)
@@ -124,7 +158,7 @@ extension GameScene {
             row.addChild(detail)
 
             row.isAccessibilityElement = true
-            row.accessibilityLabel = "\(perk.title). \(perk.summary)"
+            row.accessibilityLabel = "\(stackText). \(perk.summary)"
             row.accessibilityTraits = .button
 
             y -= 74

@@ -1175,6 +1175,12 @@ enum Levels {
         if layout.chestCount > 0, n.isMultiple(of: 8) || n.isMultiple(of: 10) {
             return .openChests(count: layout.chestCount)
         }
+        // "Clear every blocker" only closes if the board stops adding them.
+        // Rising syrup coats a fresh row every N moves, so a tick landing after
+        // the player empties the board reopens a goal they had already met —
+        // those levels take their archetype's alternate goal instead.
+        let blockersAreClearable = layout.blockerCount > 0 && layout.syrupTickEvery == nil
+
         switch archetype {
         case .starter:
             if n % 6 == 0 {
@@ -1185,7 +1191,7 @@ enum Levels {
         case .combo:
             return .createSpecials(count: n <= 20 ? 1 : min(5, 2 + n / 50))
         case .ice, .lock:
-            if layout.blockerCount > 0 {
+            if blockersAreClearable {
                 return .clearBlockers
             }
             return .collectColor(index: n % max(1, colors),
@@ -1196,7 +1202,7 @@ enum Levels {
         case .bombRush:
             return .detonateBombs(count: n <= 20 ? 1 : max(1, min(3, layout.startingBombs)))
         case .finale:
-            if layout.blockerCount > 0 {
+            if blockersAreClearable {
                 return .clearBlockers
             }
             return .detonateBombs(count: max(1, min(4, layout.startingBombs)))

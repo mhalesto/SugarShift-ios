@@ -25,8 +25,8 @@ enum GameplayHUDArt {
         cg.restoreGState()
     }
 
-    static func card(size: CGSize, ice: Bool, inset: Bool = false) -> SKSpriteNode {
-        sprite("card:\(ice):\(inset)", size: size) { cg in
+    static func card(size: CGSize, ice: Bool, inset: Bool = false, theme: WorldThemeDefinition? = nil) -> SKSpriteNode {
+        sprite("card:\(theme?.id ?? String(ice)):\(inset)", size: size) { cg in
             let s = size.height / (inset ? 82 : 140)
             let rect = CGRect(origin: .zero, size: size).insetBy(dx: 3 * s, dy: 3 * s)
             let path = UIBezierPath(roundedRect: rect, cornerRadius: (inset ? 17 : 23) * s)
@@ -36,8 +36,10 @@ enum GameplayHUDArt {
             UIColor(hex: ice ? "#AFDFFF" : "#EDBCAF").setFill()
             path.fill()
             cg.restoreGState()
-            let colors = inset ? (ice ? ["#FFFFFF", "#EAF8FF"] : ["#FFFFFF", "#FFF6E9"])
-                : (ice ? ["#F2FDFF", "#D3F3FF", "#A9DFFF"] : ["#FFF5E9", "#FFE1D5", "#F9D2C7"])
+            let palette = theme?.cardPalette
+            let colors = inset ? (ice ? ["#FFFFFF", "#EAF8FF"] : ["#FFFFFF", "#FFF6F5"])
+                : palette.map { [$0.top, $0.middle, $0.bottom] }
+                    ?? (ice ? ["#F2FDFF", "#D3F3FF", "#A9DFFF"] : ["#FFF5E9", "#FFE1D5", "#F9D2C7"])
             gradient(cg, path: path, colors: colors, height: size.height)
             UIColor.white.withAlphaComponent(0.95).setStroke()
             path.lineWidth = 1.4 * s
@@ -49,8 +51,8 @@ enum GameplayHUDArt {
         }
     }
 
-    static func icing(size: CGSize, ice: Bool) -> SKSpriteNode {
-        sprite("icing:\(ice)", size: size) { cg in
+    static func icing(size: CGSize, ice: Bool, color: String? = nil) -> SKSpriteNode {
+        sprite("icing:\(ice):\(color ?? "pink")", size: size) { cg in
             let w = size.width, h = size.height
             let path = UIBezierPath()
             path.move(to: CGPoint(x: 1, y: h * 0.84))
@@ -62,7 +64,7 @@ enum GameplayHUDArt {
             path.addCurve(to: CGPoint(x: w * 0.062, y: h * 0.89), controlPoint1: CGPoint(x: w * 0.05, y: h * 0.31), controlPoint2: CGPoint(x: w * 0.078, y: h * 0.74))
             path.addCurve(to: CGPoint(x: 1, y: h * 0.84), controlPoint1: CGPoint(x: w * 0.048, y: h * 1.05), controlPoint2: CGPoint(x: 0, y: h))
             path.close()
-            gradient(cg, path: path, colors: ice ? ["#FFFFFF", "#DBF9FF", "#46CDFB"] : ["#FFBDD9", "#FF4D99", "#FF81BA"], height: h)
+            gradient(cg, path: path, colors: ice ? ["#FFFFFF", "#DBF9FF", "#46CDFB"] : ["#FFDCDF", color ?? "#FF4D99", color ?? "#FF81BA"], height: h)
             UIColor(hex: ice ? "#F2FEFF" : "#FFB3D6").setStroke()
             path.lineWidth = 1.1
             path.stroke()
@@ -105,15 +107,15 @@ enum GameplayHUDArt {
             path.lineWidth = size * 0.11
             path.stroke()
             cg.restoreGState()
-            UIColor(hex: earned ? "#CB7B12" : "#B88660").setStroke()
+            UIColor(hex: earned ? "#CB7B12" : "#797386").setStroke()
             path.lineWidth = size * 0.045
             path.stroke()
-            gradient(cg, path: path, colors: earned ? ["#FFF9A0", "#FFE457", "#FFB91C"] : ["#FFF0D9", "#EAD0AE", "#D5AC83"], height: size)
+            gradient(cg, path: path, colors: earned ? ["#FFF9A0", "#FFE457", "#FFB91C"] : ["#FFFFFF", "#D4D7E2", "#AEB5CB"], height: size)
             cg.saveGState()
             cg.translateBy(x: center.x, y: center.y)
             cg.scaleBy(x: 0.81, y: 0.81)
             cg.translateBy(x: -center.x, y: -center.y)
-            UIColor(hex: earned ? "#FFF596" : "#FBE7CE").setStroke()
+            UIColor(hex: earned ? "#FFF596" : "#EFF7FF").setStroke()
             path.lineWidth = size * 0.035
             path.stroke()
             cg.restoreGState()

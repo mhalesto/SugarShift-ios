@@ -27,8 +27,9 @@ extension GameScene {
     }
 
     func makeHUDObjectiveIcon(_ objective: LevelObjective, size: CGFloat) -> SKNode {
-        if GameArt.texture(objective.artName) != nil {
-            return GameArt.sprite(objective.artName, fitting: CGSize(width: size, height: size))
+        let artName = worldTheme.objectiveAsset(objective)
+        if GameArt.texture(artName) != nil {
+            return GameArt.boardSprite(artName, fitting: CGSize(width: size, height: size))
         }
         let root = SKNode()
         switch objective {
@@ -58,7 +59,7 @@ extension GameScene {
             if case .destroySpecificBlocker(let type, _) = objective { blockerType = type } else { blockerType = .cage }
             let fruit = GameArt.sprite("fruit_grape", fitting: CGSize(width: size * 0.8, height: size * 0.8))
             root.addChild(fruit)
-            BoardRenderer.addBlocker(Blocker(type: blockerType, hits: 1), to: root, size: size, underPiece: false)
+            BoardRenderer.addBlocker(Blocker(type: blockerType, hits: 1), to: root, size: size, underPiece: false, theme: worldTheme)
         default:
             let ice = GameArt.sprite("blocker_ice_01", fitting: CGSize(width: size * 0.8, height: size * 0.8))
             ice.position = CGPoint(x: -size * 0.13, y: size * 0.08)

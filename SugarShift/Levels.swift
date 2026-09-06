@@ -643,7 +643,7 @@ enum Levels {
     /// The first world introduces one concept at a time. IDs and the generated
     /// campaign beyond this authored onboarding remain stable for old saves.
     static func definition(for level: Int) -> LevelDefinition? {
-        guard (1...15).contains(level) else { return nil }
+        guard (1...15).contains(level) else { return WorldCampaign.definition(for: level) }
         let rows = level <= 5 ? 6 : 7
         let columns = 7
         let pieces: [PieceColor] = level <= 5 ? [.orange, .grape, .blueberry]
@@ -1298,15 +1298,10 @@ enum Levels {
 
     static func chapter(for level: Int) -> LevelChapter {
         let n = max(1, min(level, count))
-        let chapters: [LevelChapter] = [
-            LevelChapter(title: String(localized: "Sweet Start"), subtitle: String(localized: "Learn matches, specials, and gentle shapes."), range: 1...25),
-            LevelChapter(title: String(localized: "Frost Valley"), subtitle: String(localized: "Ice, locks, and tighter boards arrive."), range: 26...50),
-            LevelChapter(title: String(localized: "Bomb Bakery"), subtitle: String(localized: "Bomb chains and odd shapes ask for planning."), range: 51...75),
-            LevelChapter(title: String(localized: "Crown Gate"), subtitle: String(localized: "Classic campaign finales before the royal climb."), range: 76...100),
-            LevelChapter(title: String(localized: "Royal Rush"), subtitle: String(localized: "Crowned boards remix hazards with bigger scores."), range: 101...150),
-            LevelChapter(title: String(localized: "Sugar Throne"), subtitle: String(localized: "The final climb to level 200."), range: 151...200)
-        ]
-        return chapters.first { $0.range.contains(n) } ?? chapters[0]
+        let theme = WorldThemes.theme(for: n)
+        return LevelChapter(title: theme.displayName,
+                            subtitle: String(localized: "Collect, combine and explore."),
+                            range: theme.levels)
     }
 
     static func milestoneReward(for level: Int) -> LevelReward? {

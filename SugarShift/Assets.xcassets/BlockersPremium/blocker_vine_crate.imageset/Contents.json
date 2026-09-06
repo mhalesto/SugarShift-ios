@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "blocker_vine_crate.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

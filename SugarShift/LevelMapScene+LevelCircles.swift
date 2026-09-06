@@ -5,31 +5,30 @@ extension LevelMapScene {
     // MARK: - Level circles
 
     func buildChapterBanners() {
-        let starts = [1, 26, 51, 76, 101, 151]
+        let starts = WorldThemes.all.map { $0.levels.lowerBound }
         for start in starts {
             guard let p = levelPositions[start] else { continue }
             let chapter = Levels.chapter(for: start)
+            let theme = WorldThemes.theme(for: start)
             let bannerW = min(size.width - 52, 330)
             let banner = SKNode()
             banner.position = CGPoint(x: 0, y: p.y + (start == 1 ? 92 : -82))
             banner.zPosition = 7
 
             let bg = SKShapeNode(rectOf: CGSize(width: bannerW, height: 52), cornerRadius: 14)
-            bg.fillColor = UIColor.white.withAlphaComponent(0.88)
-            bg.strokeColor = UIColor(hex: "#FBCFE8")
+            bg.fillColor = UIColor(hex: theme.cardPalette.top).withAlphaComponent(0.96)
+            bg.strokeColor = theme.boardRimColor
             bg.lineWidth = 1.5
             banner.addChild(bg)
 
-            let crown = Icons.sprite(start >= 101 ? Icons.Name.crown : Icons.Name.level,
-                                     size: 17,
-                                     tint: start >= 101 ? UIColor(hex: "#F59E0B") : UIColor(hex: "#EC4899"))
+            let crown = GameArt.boardSprite(theme.comboHeroAsset ?? "special_color_bomb", fitting: CGSize(width: 31, height: 35))
             crown.position = CGPoint(x: -bannerW / 2 + 24, y: 8)
             banner.addChild(crown)
 
             let title = SKLabelNode(fontNamed: "AvenirNext-Heavy")
             title.text = chapter.title
             title.fontSize = Persistence.largeText ? 16 : 15
-            title.fontColor = UIColor(hex: "#0F172A")
+            title.fontColor = UIColor(hex: theme.cardPalette.ink)
             title.verticalAlignmentMode = .center
             title.horizontalAlignmentMode = .left
             title.position = CGPoint(x: -bannerW / 2 + 46, y: 9)
@@ -38,7 +37,7 @@ extension LevelMapScene {
             let range = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
             range.text = "Levels \(chapter.range.lowerBound)-\(chapter.range.upperBound)"
             range.fontSize = 11
-            range.fontColor = UIColor(hex: "#BE185D")
+            range.fontColor = UIColor(hex: theme.cardPalette.ink).withAlphaComponent(0.8)
             range.verticalAlignmentMode = .center
             range.horizontalAlignmentMode = .left
             range.position = CGPoint(x: -bannerW / 2 + 46, y: -11)

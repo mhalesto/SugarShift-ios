@@ -28,7 +28,7 @@ enum BoardRenderer {
         default: return "blocker_\(blocker.type.rawValue)"
         }
     }
-    static func makeTile(cell: Cell, size: CGFloat, accessibilityLabel: String) -> SKNode {
+    static func makeTile(cell: Cell, size: CGFloat, accessibilityLabel: String, theme: WorldThemeDefinition? = nil) -> SKNode {
         let container = SKNode()
         let body = SKShapeNode(rectOf: CGSize(width: size, height: size), cornerRadius: size * 0.20)
         body.name = "body"
@@ -38,29 +38,28 @@ enum BoardRenderer {
         body.addChild(GameplayHUDArt.tile(size: size))
         container.addChild(body)
         if let blocker = cell.blocker, blocker.type == .jelly {
-            addBlocker(blocker, to: container, size: size, underPiece: true)
+            addBlocker(blocker, to: container, size: size, underPiece: true, theme: theme)
         }
         if let piece = cell.piece {
             let art: SKSpriteNode
             if let special = piece.special, GameArt.texture(specialAsset(special)) != nil {
-                art = GameArt.sprite(specialAsset(special), fitting: CGSize(width: size * 1.04, height: size * 1.04))
+                let asset = theme?.id == "cloud" && special == .wrapped ? "combo_balloon" : specialAsset(special)
+                art = GameArt.boardSprite(asset, fitting: CGSize(width: size * 0.94, height: size * 0.94))
                 // Base color remains legible for color-bomb combination rules.
                 if special != .colorBomb {
-                    let colorFruit = SKSpriteNode(texture: GameArt.fruit(piece.color))
-                    colorFruit.size = CGSize(width: size * 0.32, height: size * 0.32)
+                    let colorFruit = GameArt.boardSprite(theme?.pieceAsset(piece.color) ?? "fruit_\(piece.color.rawValue)", fitting: CGSize(width: size * 0.25, height: size * 0.25))
                     colorFruit.position = CGPoint(x: size * 0.30, y: -size * 0.28)
                     colorFruit.zPosition = 6
                     container.addChild(colorFruit)
                 }
             } else {
-                art = SKSpriteNode(texture: GameArt.fruit(piece.color))
-                art.size = CGSize(width: size * 1.04, height: size * 1.04)
+                art = GameArt.boardSprite(theme?.pieceAsset(piece.color) ?? "fruit_\(piece.color.rawValue)", fitting: CGSize(width: size * 0.92, height: size * 0.94))
             }
             art.name = "emoji" // Existing particle/swap adapters retain this hook.
             art.zPosition = 2
             container.addChild(art)
             if piece.kind == .key {
-                let key = GameArt.sprite("blocker_key", fitting: CGSize(width: size * 0.56, height: size * 0.56))
+                let key = GameArt.boardSprite("objective_key", fitting: CGSize(width: size * 0.78, height: size * 0.78))
                 key.zPosition = 8
                 container.addChild(key)
             }
@@ -80,7 +79,7 @@ enum BoardRenderer {
             }
         }
         if let blocker = cell.blocker, blocker.type != .jelly {
-            addBlocker(blocker, to: container, size: size, underPiece: false)
+            addBlocker(blocker, to: container, size: size, underPiece: false, theme: theme)
         }
         container.isAccessibilityElement = true
         container.accessibilityLabel = accessibilityLabel
@@ -89,13 +88,30 @@ enum BoardRenderer {
         return container
     }
 
-    static func addBlocker(_ blocker: Blocker, to container: SKNode, size: CGFloat, underPiece: Bool) {
-        let artName = blockerAsset(blocker)
+    static func addBlocker(_ blocker: Blocker, to container: SKNode, size: CGFloat, underPiece: Bool, theme: WorldThemeDefinition? = nil) {
+        let artName = theme?.blockerAsset(blocker) ?? blockerAsset(blocker)
         if GameArt.texture(artName) != nil {
-            let art = GameArt.sprite(artName, fitting: CGSize(width: size * 0.99, height: size * 0.99))
+            let art = GameArt.boardSprite(artName, fitting: CGSize(width: size * 0.97, height: size * 0.97))
             art.zPosition = underPiece ? 1 : 7
-            if blocker.type.rules.canContainPiece { art.alpha = underPiece ? 0.75 : 0.72 }
+            if [.ice, .magicFrost, .bubble].contains(blocker.type) {
+                art.alpha = 0.72
+                // Preserve bright frozen edges while the real fruit remains
+                // visible through the center of the separately anchored layer.
+                let rim = SKShapeNode(rectOf: CGSize(width: size * 0.94, height: size * 0.94), cornerRadius: size * 0.16)
+                rim.fillColor = .clear
+                rim.strokeColor = UIColor(hex: "#C5F7FF").withAlphaComponent(0.9)
+                rim.lineWidth = size * 0.027
+                rim.glowWidth = 0.5
+                rim.zPosition = 8
+                container.addChild(rim)
+            } else if blocker.type == .jelly { art.alpha = 0.65 }
             container.addChild(art)
+            if blocker.hits > 1, ![.ice, .jelly, .honey, .cream].contains(blocker.type) {
+                // Reusable fracture overlay exposes the actual damage state of
+                // thematic stone/wood skins without inventing another mechanic.
+                art.color = UIColor.white
+                art.colorBlendFactor = blocker.hits == 2 ? 0.08 : 0
+            }
         } else if [.lock, .colorLock, .cage, .crate, .vine].contains(blocker.type) {
             let wooden = blocker.type == .crate || blocker.type == .vine
             let frame = SKNode()
@@ -159,7 +175,7 @@ enum BoardRenderer {
             crack.lineWidth = blocker.hits == 1 ? 2.5 : 1
             shell.addChild(crack)
         }
-        if blocker.hits > 1 || blocker.type == .countdown {
+        if (Persistence.highContrast && blocker.hits > 1) || blocker.type == .countdown {
             let value = GameSurface.label("\(blocker.countdown ?? blocker.hits)", size: max(10, size * 0.22), color: .white)
             let badge = SKShapeNode(circleOfRadius: size * 0.15)
             badge.fillColor = UIColor(hex: "#172C51")

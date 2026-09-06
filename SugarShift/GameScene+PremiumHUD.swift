@@ -61,24 +61,35 @@ extension GameScene {
         levelPicker.addChild(pickerSurface)
         top.addChild(levelPicker)
         #endif
-        let sign = GameSurface.panel(size: CGSize(width: 132 * s, height: 24 * s), top: UIColor(hex: "#EAC08B"), bottom: UIColor(hex: "#996447"), radius: 7 * s, rim: UIColor(hex: "#F7DBA8"))
+        let sign = WorldHUDDecoration.sign(theme: worldTheme, size: CGSize(width: 89 * s, height: 45 * s))
         sign.name = "worldSign"
-        sign.position = CGPoint(x: 0, y: -layout.brand.height / 2 + 9 * s)
-        let signLabel = GameSurface.label(worldTheme.displayName, size: 11 * s, color: UIColor(hex: "#FFF9E7"))
-        sign.addChild(signLabel)
+        sign.position = CGPoint(x: w / 2 - 48 * s, y: -layout.brand.height / 2 + 9 * s)
+        sign.zRotation = 0.12
         top.addChild(sign)
+        // Keep settings reachable beside the logo, clear of the world sign.
+        gear.position = CGPoint(x: w / 2 - 16 * s, y: 51 * s)
+        gear.size = CGSize(width: 22 * s, height: 22 * s)
 
         let ice = worldTheme.id == "ice"
-        let ink = UIColor(hex: ice ? "#152274" : "#46113F")
+        let ink = UIColor(hex: worldTheme.cardPalette.ink)
         let card = SKShapeNode()
         card.name = "levelCard"
         card.position = CGPoint(x: 0, y: layout.levelCard.midY)
         card.zPosition = 50
-        card.addChild(GameplayHUDArt.card(size: layout.levelCard.size, ice: ice))
-        let icing = GameplayHUDArt.icing(size: CGSize(width: w * 0.37, height: 49 * s), ice: ice)
-        icing.position = CGPoint(x: -w * 0.315 + 3 * s, y: layout.levelCard.height / 2 - 25 * s)
-        icing.zPosition = 1
-        card.addChild(icing)
+        card.addChild(GameplayHUDArt.card(size: layout.levelCard.size, ice: ice, theme: worldTheme))
+        if ice {
+            for (x, width) in [(-w * 0.29, w * 0.43), (w * 0.31, w * 0.37)] {
+                let cap = WorldHUDDecoration.snowCap(size: CGSize(width: width, height: 28 * s))
+                cap.position = CGPoint(x: x, y: layout.levelCard.height / 2 - 4 * s)
+                cap.zPosition = 1
+                card.addChild(cap)
+            }
+        } else {
+            let icing = GameplayHUDArt.icing(size: CGSize(width: w * 0.39, height: 49 * s), ice: false, color: worldTheme.cardPalette.trim)
+            icing.position = CGPoint(x: -w * 0.305 + 3 * s, y: layout.levelCard.height / 2 - 22 * s)
+            icing.zPosition = 1
+            card.addChild(icing)
+        }
         addChild(card)
         headerCard = card
         let left = -w / 2 + 21 * s
@@ -90,10 +101,15 @@ extension GameScene {
         levelLabel = level
         let dividerX = w / 2 - 108 * s
         if levelConfig.difficulty != .normal {
-            let badge = GameSurface.label(levelConfig.difficulty.rawValue.uppercased(), size: 7 * s, color: ink.withAlphaComponent(0.7))
-            badge.horizontalAlignmentMode = .right
-            badge.position = CGPoint(x: dividerX - 8 * s, y: 43 * s)
-            if level.frame.maxX + 6 * s < badge.position.x - badge.frame.width { card.addChild(badge) }
+            let badgeText = NSLocalizedString(levelConfig.difficulty.rawValue.uppercased(), comment: "Level difficulty")
+            let badge = GameSurface.panel(size: CGSize(width: 47 * s, height: 18 * s),
+                top: UIColor(hex: "#FF787E"), bottom: UIColor(hex: "#FF306A"), radius: 9 * s)
+            badge.name = "difficultyBadge"
+            badge.addChild(GameSurface.label(badgeText, size: 9 * s, color: .white))
+            badge.position = CGPoint(x: min(dividerX - 30 * s, level.frame.maxX + 30 * s), y: 39 * s)
+            let maxTitleWidth = badge.position.x - 27 * s - left
+            if level.frame.width > maxTitleWidth { level.xScale = maxTitleWidth / level.frame.width }
+            card.addChild(badge)
         }
         let cap = GameSurface.label(String(localized: "Collect & Clear:"), size: 11 * s, color: ink)
         cap.fontName = "AvenirNext-Bold"
@@ -111,7 +127,7 @@ extension GameScene {
         let objectives = displayedHUDObjectives
         let count = max(1, objectives.count)
         let itemW = goalW / CGFloat(count)
-        let iconSize = min(35 * s, itemW * 0.49)
+        let iconSize = min(38 * s, itemW * 0.50)
         for (index, objective) in objectives.enumerated() {
             let item = SKNode()
             item.name = "objective:\(index)"
@@ -144,15 +160,16 @@ extension GameScene {
         divider.fillColor = UIColor(hex: ice ? "#6EC3EA" : "#E5A395").withAlphaComponent(0.6)
         divider.strokeColor = .clear
         card.addChild(divider)
-        let moves = GameplayHUDArt.card(size: CGSize(width: 89 * s, height: 82 * s), ice: ice, inset: true)
+        let moves = GameplayHUDArt.card(size: CGSize(width: 89 * s, height: 82 * s), ice: ice, inset: true, theme: worldTheme)
         moves.name = "movesInset"
         moves.position = CGPoint(x: w / 2 - 55 * s, y: 17 * s)
         card.addChild(moves)
-        let movesCap = GameSurface.label(String(localized: "Moves"), size: 13 * s, color: ink)
+        let movesInk = UIColor(hex: ice ? "#152274" : "#340B4F")
+        let movesCap = GameSurface.label(String(localized: "Moves"), size: 13 * s, color: movesInk)
         movesCap.fontName = "AvenirNext-Bold"
         movesCap.position.y = 22 * s
         moves.addChild(movesCap)
-        movesValueLabel = GameSurface.label(size: 43 * s, color: ink)
+        movesValueLabel = GameSurface.label(size: 43 * s, color: movesInk)
         movesValueLabel.position.y = -8 * s
         moves.addChild(movesValueLabel)
         let trackW = w - 59 * s
@@ -172,8 +189,7 @@ extension GameScene {
         crop.maskNode = progressFill
         crop.addChild(GameplayHUDArt.progress(size: CGSize(width: trackW, height: 14 * s)))
         card.addChild(crop)
-        for stop in HUDScoreProgres
-                s.starStops {
+        for stop in HUDScoreProgress.starStops {
             let star = makeProgressStar(size: 29 * s)
             star.position = CGPoint(x: -trackW / 2 + trackW * stop, y: progressTrack.position.y)
             star.zPosition = 3
@@ -300,7 +316,7 @@ extension GameScene {
         for (index, objective) in displayedHUDObjectives.enumerated() where index < objectiveLabels.count {
             let progress = hudProgress(for: objective)
             objectiveLabels[index].text = "\(progress.current)/\(progress.target)"
-            objectiveLabels[index].fontColor = progress.isComplete ? UIColor(hex: "#267632") : UIColor(hex: worldTheme.id == "ice" ? "#152274" : "#46113F")
+            objectiveLabels[index].fontColor = progress.isComplete ? UIColor(hex: worldTheme.id == "galaxy" ? "#C9FFAF" : "#267632") : UIColor(hex: worldTheme.cardPalette.ink)
             objectiveLabels[index].accessibilityLabel = objective.accessibilityTitle + " \(progress.current) / \(progress.target)"
             objectiveLabels[index].isAccessibilityElement = true
         }

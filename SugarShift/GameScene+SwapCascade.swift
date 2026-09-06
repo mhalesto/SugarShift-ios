@@ -502,8 +502,7 @@ extension GameScene {
             let flash = Effects.makeImpactFlash(at: center, big: true)
             worldNode.addChild(flash)
         }
-        Effects.showComboBanner(text: worldSequence == nil ? banner : worldTheme.comboTitle,
-                                color: worldSequence == nil ? tint : worldTheme.glowColor, in: self)
+        if worldSequence == nil { Effects.showComboBanner(text: banner, color: tint, in: self) }
         let comboPoints = scoreForClear(preClear: preClear,
                                         clearResult: clearResult,
                                         pointsPerTile: scorePerTile,

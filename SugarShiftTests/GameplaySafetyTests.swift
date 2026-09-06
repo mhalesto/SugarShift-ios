@@ -11,7 +11,7 @@ struct GameplaySafetyTests {
             scene.buildHeaderCard()
             let logo = scene.childNode(withName: "//brandLogo")!
             let sign = scene.childNode(withName: "//worldSign")!
-            #expect(logo.frame.minY > sign.frame.maxY)
+            #expect(!logo.calculateAccumulatedFrame().intersects(sign.calculateAccumulatedFrame()))
             #expect(scene.totalLabel.horizontalAlignmentMode == .center)
             #expect(scene.totalLabel.position.x == 0)
             #expect(scene.headerCard?.childNode(withName: "objectiveStrip") != nil)

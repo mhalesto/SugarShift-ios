@@ -1,0 +1,392 @@
+[
+  {
+    "alpha" : false,
+    "category" : "Worlds",
+    "id" : "world_honey_background",
+    "master" : "art\/masters\/world_honey_background.png",
+    "masterDimensions" : "853×1843",
+    "shipping" : "SugarShift\/Assets.xcassets\/Worlds\/world_honey_background.imageset\/world_honey_background.jpg",
+    "shippingDimensions" : "853×1843",
+    "transparentPixels" : 0
+  },
+  {
+    "alpha" : false,
+    "category" : "Worlds",
+    "id" : "world_firefly_background",
+    "master" : "art\/masters\/world_firefly_background.png",
+    "masterDimensions" : "852×1846",
+    "shipping" : "SugarShift\/Assets.xcassets\/Worlds\/world_firefly_background.imageset\/world_firefly_background.jpg",
+    "shippingDimensions" : "852×1846",
+    "transparentPixels" : 0
+  },
+  {
+    "alpha" : false,
+    "category" : "Worlds",
+    "id" : "world_sahara_background",
+    "master" : "art\/masters\/world_sahara_background.png",
+    "masterDimensions" : "853×1844",
+    "shipping" : "SugarShift\/Assets.xcassets\/Worlds\/world_sahara_background.imageset\/world_sahara_background.jpg",
+    "shippingDimensions" : "853×1844",
+    "transparentPixels" : 0
+  },
+  {
+    "alpha" : false,
+    "category" : "Worlds",
+    "id" : "world_golden_background",
+    "master" : "art\/masters\/world_golden_background.png",
+    "masterDimensions" : "854×1842",
+    "shipping" : "SugarShift\/Assets.xcassets\/Worlds\/world_golden_background.imageset\/world_golden_background.jpg",
+    "shippingDimensions" : "854×1842",
+    "transparentPixels" : 0
+  },
+  {
+    "alpha" : false,
+    "category" : "Worlds",
+    "id" : "world_galaxy_background",
+    "master" : "art\/masters\/world_galaxy_background.png",
+    "masterDimensions" : "853×1844",
+    "shipping" : "SugarShift\/Assets.xcassets\/Worlds\/world_galaxy_background.imageset\/world_galaxy_background.jpg",
+    "shippingDimensions" : "853×1844",
+    "transparentPixels" : 0
+  },
+  {
+    "alpha" : false,
+    "category" : "Worlds",
+    "id" : "world_sakura_background",
+    "master" : "art\/masters\/world_sakura_background.png",
+    "masterDimensions" : "854×1842",
+    "shipping" : "SugarShift\/Assets.xcassets\/Worlds\/world_sakura_background.imageset\/world_sakura_background.jpg",
+    "shippingDimensions" : "854×1842",
+    "transparentPixels" : 0
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_ice_01",
+    "master" : "art\/masters\/blocker_ice_01_v2.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_ice_01.imageset\/blocker_ice_01.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 19769
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_ice_02",
+    "master" : "art\/masters\/blocker_ice_02_v2.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_ice_02.imageset\/blocker_ice_02.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 19039
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_ice_03",
+    "master" : "art\/masters\/blocker_ice_03_v2.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_ice_03.imageset\/blocker_ice_03.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 20947
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_cloud",
+    "master" : "art\/masters\/blocker_cloud.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_cloud.imageset\/blocker_cloud.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 40196
+  },
+  {
+    "alpha" : true,
+    "category" : "WorldEffects",
+    "id" : "combo_balloon",
+    "master" : "art\/masters\/combo_balloon.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/WorldEffects\/combo_balloon.imageset\/combo_balloon.png",
+    "shippingDimensions" : "640×640",
+    "transparentPixels" : 247107
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_rainbow",
+    "master" : "art\/masters\/objective_rainbow.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_rainbow.imageset\/objective_rainbow.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 54244
+  },
+  {
+    "alpha" : true,
+    "category" : "WorldEffects",
+    "id" : "combo_firefly_jar",
+    "master" : "art\/masters\/combo_firefly_jar.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/WorldEffects\/combo_firefly_jar.imageset\/combo_firefly_jar.png",
+    "shippingDimensions" : "640×640",
+    "transparentPixels" : 216086
+  },
+  {
+    "alpha" : true,
+    "category" : "WorldEffects",
+    "id" : "combo_blossom",
+    "master" : "art\/masters\/combo_blossom.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/WorldEffects\/combo_blossom.imageset\/combo_blossom.png",
+    "shippingDimensions" : "640×640",
+    "transparentPixels" : 159585
+  },
+  {
+    "alpha" : true,
+    "category" : "WorldEffects",
+    "id" : "combo_planet",
+    "master" : "art\/masters\/combo_planet.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/WorldEffects\/combo_planet.imageset\/combo_planet.png",
+    "shippingDimensions" : "640×640",
+    "transparentPixels" : 203527
+  },
+  {
+    "alpha" : true,
+    "category" : "WorldEffects",
+    "id" : "combo_honey_jar",
+    "master" : "art\/masters\/combo_honey_jar.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/WorldEffects\/combo_honey_jar.imageset\/combo_honey_jar.png",
+    "shippingDimensions" : "640×640",
+    "transparentPixels" : 143884
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_crate",
+    "master" : "art\/masters\/blocker_crate.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_crate.imageset\/blocker_crate.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 21015
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_lock",
+    "master" : "art\/masters\/blocker_lock.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_lock.imageset\/blocker_lock.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 54168
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_pearl",
+    "master" : "art\/masters\/objective_pearl.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_pearl.imageset\/objective_pearl.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 36786
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_shell",
+    "master" : "art\/masters\/objective_shell.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_shell.imageset\/objective_shell.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 40476
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_starfish",
+    "master" : "art\/masters\/objective_starfish.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_starfish.imageset\/objective_starfish.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 59163
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_star",
+    "master" : "art\/masters\/objective_star.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_star.imageset\/objective_star.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 50972
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_donut",
+    "master" : "art\/masters\/objective_donut.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_donut.imageset\/objective_donut.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 36946
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_scarab",
+    "master" : "art\/masters\/objective_scarab.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_scarab.imageset\/objective_scarab.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 52299
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_urn",
+    "master" : "art\/masters\/objective_urn.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_urn.imageset\/objective_urn.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 45966
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_lantern",
+    "master" : "art\/masters\/objective_lantern.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_lantern.imageset\/objective_lantern.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 71678
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_amber",
+    "master" : "art\/masters\/objective_amber.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_amber.imageset\/objective_amber.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 46410
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_magma",
+    "master" : "art\/masters\/blocker_magma.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_magma.imageset\/blocker_magma.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 20699
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_seaweed",
+    "master" : "art\/masters\/blocker_seaweed.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_seaweed.imageset\/blocker_seaweed.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 46389
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_barrel",
+    "master" : "art\/masters\/blocker_barrel.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_barrel.imageset\/blocker_barrel.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 34635
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_vine_crate",
+    "master" : "art\/masters\/blocker_vine_crate.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_vine_crate.imageset\/blocker_vine_crate.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 28965
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_sandstone",
+    "master" : "art\/masters\/blocker_sandstone.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_sandstone.imageset\/blocker_sandstone.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 28151
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_tablet",
+    "master" : "art\/masters\/blocker_tablet.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_tablet.imageset\/blocker_tablet.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 20592
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_asteroid",
+    "master" : "art\/masters\/blocker_asteroid.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_asteroid.imageset\/blocker_asteroid.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 39831
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_pink_crystal",
+    "master" : "art\/masters\/blocker_pink_crystal.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_pink_crystal.imageset\/blocker_pink_crystal.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 25017
+  },
+  {
+    "alpha" : true,
+    "category" : "BlockersPremium",
+    "id" : "blocker_rope",
+    "master" : "art\/masters\/blocker_rope.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/BlockersPremium\/blocker_rope.imageset\/blocker_rope.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 41834
+  },
+  {
+    "alpha" : true,
+    "category" : "WorldEffects",
+    "id" : "combo_sandstorm",
+    "master" : "art\/masters\/combo_sandstorm.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/WorldEffects\/combo_sandstorm.imageset\/combo_sandstorm.png",
+    "shippingDimensions" : "640×640",
+    "transparentPixels" : 215714
+  },
+  {
+    "alpha" : true,
+    "category" : "ObjectivesPremium",
+    "id" : "objective_key",
+    "master" : "art\/masters\/objective_key.png",
+    "masterDimensions" : "1254×1254",
+    "shipping" : "SugarShift\/Assets.xcassets\/ObjectivesPremium\/objective_key.imageset\/objective_key.png",
+    "shippingDimensions" : "320×320",
+    "transparentPixels" : 68818
+  },
+  {
+    "alpha" : false,
+    "category" : "Worlds",
+    "id" : "world_cloud_background",
+    "master" : "art\/masters\/world_cloud_background.png",
+    "masterDimensions" : "854×1842",
+    "shipping" : "SugarShift\/Assets.xcassets\/Worlds\/world_cloud_background.imageset\/world_cloud_background.jpg",
+    "shippingDimensions" : "854×1842",
+    "transparentPixels" : 0
+  }
+]

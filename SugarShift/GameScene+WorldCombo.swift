@@ -4,8 +4,11 @@ extension ClearPresentationPlan {
     var worldComboCue: WorldComboCue {
         switch kind {
         case .playerSmash(.mega): return .megaSmash
+        case .colorBomb: return .worldSpecial
         case .combo(.colorColor), .combo(.colorWrapped), .combo(.colorBomb),
-             .combo(.wrappedWrapped), .combo(.bombWrapped), .combo(.bombBomb):
+             .combo(.wrappedWrapped), .combo(.bombWrapped), .combo(.bombBomb),
+             .combo(.stripeStripe), .combo(.wrappedStripe), .combo(.colorStripe),
+             .combo(.colorFish), .combo(.fishFish), .combo(.advanced):
             return .powerfulPair
         default: return .ordinary
         }
@@ -33,7 +36,7 @@ extension GameScene {
         worldNode.addChild(root)
         let frame = gameplayLayout.board.insetBy(dx: -6, dy: -6)
         let crop = SKCropNode()
-        let mask = SKShapeNode(rect: frame, cornerRadius: 16)
+        let mask = SKShapeNode(path: boardContourPath)
         mask.fillColor = .white
         mask.strokeColor = .clear
         crop.maskNode = mask
@@ -61,14 +64,34 @@ extension GameScene {
             return
         }
 
-        let heroSize = CGSize(width: tileSize * (style == .eruption ? 2.25 : 3.7),
-                              height: tileSize * 2.5)
-        let hero = GameArt.sprite(worldTheme.comboHeroAsset ?? "", fitting: heroSize)
+        // Hero has its own broad clip so its silhouette can cross a board hole,
+        // while material beams and particles respect the active-cell contour.
+        let heroLayer = SKCropNode()
+        let heroMask = SKShapeNode(rect: frame.insetBy(dx: -3, dy: -3), cornerRadius: 12)
+        heroMask.fillColor = .white
+        heroMask.strokeColor = .clear
+        heroLayer.maskNode = heroMask
+        root.addChild(heroLayer)
+        let heroSize = CGSize(width: tileSize * (style == .whaleWave ? 4.4 : style == .frost ? 1.6 : 3.2),
+                              height: tileSize * (style == .rainbow ? 3.6 : 3.0))
+        let hero = GameArt.boardSprite(worldTheme.comboHeroAsset ?? "", fitting: heroSize)
         hero.zPosition = 4
         hero.position = CGPoint(x: min(frame.maxX - hero.size.width / 2, max(frame.minX + hero.size.width / 2, origin.x)),
                                 y: min(frame.maxY - hero.size.height / 2, max(frame.minY + hero.size.height / 2, origin.y)))
-        crop.addChild(hero)
+        heroLayer.addChild(hero)
         let impactPoint = hero.position
+        let title = WorldComboArtwork.title(worldTheme.comboTitle, width: frame.width * 0.70,
+                                           size: min(32, tileSize * 0.75), color: tint)
+        title.position = CGPoint(x: min(frame.maxX - frame.width * 0.36, max(frame.minX + frame.width * 0.36, impactPoint.x)),
+                                 y: min(frame.maxY - tileSize, max(frame.minY + tileSize, impactPoint.y + (style == .whaleWave ? 1.55 : -1.45) * tileSize)))
+        title.zPosition = 8
+        title.zRotation = 0.10
+        title.alpha = 0
+        title.setScale(0.65)
+        heroLayer.addChild(title)
+        title.run(.sequence([.wait(forDuration: sequence.impactAt * 0.65),
+            .group([.fadeIn(withDuration: 0.10), .scale(to: 1.06, duration: 0.16)]),
+            .scale(to: 1, duration: 0.10), .wait(forDuration: 0.28), .fadeOut(withDuration: 0.24)]))
         if style == .eruption {
             hero.setScale(0.60)
             hero.run(.sequence([
@@ -95,7 +118,7 @@ extension GameScene {
             }
             Effects.haptic(.rigid, intensity: 0.38)
             Audio.shared.play(.crate, pan: soundPan(at: origin))
-        } else {
+        } else if style == .whaleWave {
             let path = CGMutablePath()
             let start = CGPoint(x: impactPoint.x - tileSize * 1.5, y: impactPoint.y - tileSize * 0.55)
             hero.position = start
@@ -103,9 +126,19 @@ extension GameScene {
             path.addQuadCurve(to: impactPoint,
                 control: CGPoint(x: impactPoint.x - tileSize * 0.6, y: impactPoint.y + tileSize * 1.6))
             hero.run(.sequence([.follow(path, asOffset: false, orientToPath: false, duration: sequence.impactAt),
-                .group([.moveBy(x: tileSize * 0.6, y: -tileSize * 0.6, duration: 0.20),
-                        .fadeOut(withDuration: 0.20)])]))
+                .wait(forDuration: 0.16),
+                .group([.moveBy(x: tileSize * 1.25, y: -tileSize * 0.7, duration: 0.40),
+                        .fadeOut(withDuration: 0.40)])]))
             Audio.shared.play(.fish, pan: soundPan(at: origin))
+        } else {
+            hero.setScale(0.45)
+            let grow = SKAction.scale(to: 1.04, duration: sequence.impactAt)
+            grow.timingMode = .easeOut
+            let hold = SKAction.group([.scale(to: style == .rainbow ? 1.10 : 1.18, duration: 0.30),
+                                      .rotate(byAngle: style == .sandstorm || style == .cosmic ? 0.6 : 0.06, duration: 0.30)])
+            hero.run(.sequence([grow, hold, .group([.fadeOut(withDuration: 0.30),
+                .moveBy(x: 0, y: style == .rainbow ? tileSize : 0, duration: 0.30)])]))
+            Audio.shared.play(.colorCharge, pan: soundPan(at: origin))
         }
 
         root.run(.sequence([.wait(forDuration: sequence.impactAt), .run { [weak self, weak crop] in
@@ -117,7 +150,7 @@ extension GameScene {
             wave.position = impactPoint
             wave.fillColor = .clear
             wave.strokeColor = tint.withAlphaComponent(0.85)
-            wave.lineWidth = style == .eruption ? 6 : 10
+            wave.lineWidth = style == .eruption ? 6 : style == .frost ? 3 : 10
             wave.glowWidth = 3
             crop.addChild(wave)
             wave.run(.group([.scale(to: 8, duration: 0.32), .fadeOut(withDuration: 0.32)]))
@@ -127,8 +160,26 @@ extension GameScene {
             for (index, target) in sorted.prefix(sequence.linkCount).enumerated() {
                 let end = self.point(forRow: target.r, col: target.c)
                 let link = Effects.makeEnergySweep(from: impactPoint, to: end,
-                    tint: tint, width: style == .eruption ? 7 : 5, delay: Double(index) * 0.008)
+                    tint: tint, width: style == .eruption || style == .frost ? 10 : 5, delay: Double(index) * 0.015)
                 crop.addChild(link)
+                if style == .rainbow {
+                    for (lane, hex) in ["#FF56B9", "#FFE64E", "#68FF74", "#68CFFF"].enumerated() {
+                        let rainbow = Effects.makeEnergySweep(from: CGPoint(x: impactPoint.x + CGFloat(lane - 2) * 3, y: impactPoint.y),
+                            to: CGPoint(x: end.x + CGFloat(lane - 2) * 3, y: end.y), tint: UIColor(hex: hex), width: 3, delay: Double(index) * 0.015)
+                        crop.addChild(rainbow)
+                    }
+                }
+                if style == .firefly {
+                    let spark = SKSpriteNode(texture: WorldEffectTextures.ambientTexture(.firefly))
+                    spark.size = CGSize(width: 15, height: 15)
+                    spark.position = impactPoint
+                    crop.addChild(spark)
+                    let flight = CGMutablePath()
+                    flight.move(to: impactPoint)
+                    flight.addQuadCurve(to: end, control: CGPoint(x: (end.x + impactPoint.x) / 2 + CGFloat(index % 3 - 1) * 30,
+                        y: (end.y + impactPoint.y) / 2 + 24))
+                    spark.run(.sequence([.follow(flight, asOffset: false, orientToPath: false, duration: 0.28), .fadeOut(withDuration: 0.16)]))
+                }
             }
         }]))
         root.run(.sequence([.wait(forDuration: sequence.finishesAt), .removeFromParent()]))
@@ -171,21 +222,21 @@ enum WorldEffectTextures {
 
     static func burst(style: WorldComboStyle, tint: UIColor, count: Int) -> SKEmitterNode {
         let emitter = SKEmitterNode()
-        emitter.particleTexture = texture(bubble: style == .whaleWave)
+        emitter.particleTexture = style == .frost ? WorldComboArtwork.material("iceShard") : ambientTexture(style == .whaleWave ? .bubble : style == .petal ? .petal : style == .firefly ? .firefly : style == .rainbow || style == .cosmic ? .cosmic : style == .sandstorm ? .sand : .ember)
         emitter.particleBirthRate = 500
         emitter.numParticlesToEmit = min(48, max(0, count))
-        emitter.particleLifetime = 0.25
+        emitter.particleLifetime = 0.40
         emitter.particleLifetimeRange = 0.08
         emitter.particleSpeed = 240
         emitter.particleSpeedRange = 110
         emitter.emissionAngleRange = .pi * 2
         emitter.yAcceleration = style == .eruption ? -380 : -140
-        emitter.particleScale = style == .eruption ? 0.18 : 0.32
+        emitter.particleScale = style == .eruption ? 0.22 : style == .frost ? 0.52 : 0.35
         emitter.particleScaleRange = 0.12
         emitter.particleScaleSpeed = -0.3
         emitter.particleAlphaSpeed = -2.0
         emitter.particleColor = tint
-        emitter.particleColorBlendFactor = 1
+        emitter.particleColorBlendFactor = 0.25
         emitter.particleRotationRange = .pi
         emitter.particleRotationSpeed = style == .eruption ? 4 : 0
         return emitter

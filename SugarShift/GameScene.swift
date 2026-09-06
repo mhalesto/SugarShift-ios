@@ -1047,27 +1047,7 @@ final class GameScene: SKScene {
         worldNode.childNode(withName: "shapeMat")?.removeFromParent()
         worldNode.childNode(withName: "tileCornerFillers")?.removeFromParent()
         worldNode.childNode(withName: "mechanicsLayer")?.removeFromParent()
-        if levelConfig.layout.mask != nil && Persistence.shapedBoard {
-            buildShapeMat()
-            buildInteriorCornerFillers()
-        }
-        do {
-            let bg = SKShapeNode(rectOf: CGSize(width: layout.board.width + 12,
-                                               height: layout.board.height + 12), cornerRadius: 17)
-            bg.name = "boardBackdrop"
-            bg.position = CGPoint(x: layout.board.midX, y: layout.board.midY)
-            bg.fillColor = UIColor(hex: "#10263F")
-            bg.strokeColor = UIColor(hex: worldTheme.id == "ice" ? "#8FE8FF" : "#FFD0A1")
-            bg.lineWidth = 3
-            bg.glowWidth = 2
-            let rim = SKShapeNode(rectOf: CGSize(width: layout.board.width + 8, height: layout.board.height + 8), cornerRadius: 15)
-            rim.fillColor = .clear
-            rim.strokeColor = UIColor(hex: worldTheme.id == "ice" ? "#ECFDFF" : "#FFF0D5")
-            rim.lineWidth = 0.8
-            bg.addChild(rim)
-            bg.zPosition = -12
-            worldNode.addChild(bg)
-        }
+        buildShapeMat()
         buildMechanicsLayer()
     }
 
@@ -1117,50 +1097,33 @@ final class GameScene: SKScene {
         worldNode.addChild(layer)
     }
 
-    /// Build a connected backdrop that hugs the playable cells. Each cell gets
-    /// a rounded square slightly larger than `tileSize` so adjacent ones merge
-    /// into a single shape — mimicking the Candy Crush mat look.
+    var boardContourPath: CGPath {
+        let mask = Persistence.shapedBoard ? levelConfig.layout.mask : nil
+        return BoardContour.path(mask: mask ?? Array(repeating: Array(repeating: true, count: cols), count: rows),
+                                 frame: gameplayLayout.board, tileSize: tileSize, gap: gap)
+    }
+
+    /// One continuous rim follows the real level mask, including interior holes.
+    /// This avoids both the old rectangular backing and per-cell seam outlines.
     func buildShapeMat() {
         let mat = SKNode()
-        mat.name = "shapeMat"
-        mat.zPosition = -10
-        let radius = tileSize * 0.22
-        // pad must be ≥ 2r·(1 − 1/√2) ≈ 0.59·r so adjacent rounded mats overlap
-        // enough to cover the diamond gap where four corners meet.
-        let pad: CGFloat = max(6, radius * 0.7)
-        let mask = levelConfig.layout.mask
-        let fill = UIColor(hex: "#0F172A").withAlphaComponent(0.92)
-        for r in 0..<rows {
-            for c in 0..<cols {
-                if let m = mask, !m[r][c] { continue }
-                let p = point(forRow: r, col: c)
-                let cell = SKShapeNode(
-                    rectOf: CGSize(width: tileSize + pad, height: tileSize + pad),
-                    cornerRadius: radius
-                )
-                cell.fillColor = fill
-                cell.strokeColor = .clear
-                cell.position = p
-                mat.addChild(cell)
-
-                // Sharp filler squares between adjacent playable cells erase
-                // the residual diamond gaps without rounding the outer edges.
-                let inset = tileSize * 0.5
-                if c + 1 < cols, mask?[r][c + 1] ?? true {
-                    let bridge = SKShapeNode(rectOf: CGSize(width: pad + 2, height: tileSize))
-                    bridge.fillColor = fill
-                    bridge.strokeColor = .clear
-                    bridge.position = CGPoint(x: p.x + inset, y: p.y)
-                    mat.addChild(bridge)
-                }
-                if r + 1 < rows, mask?[r + 1][c] ?? true {
-                    let bridge = SKShapeNode(rectOf: CGSize(width: tileSize, height: pad + 2))
-                    bridge.fillColor = fill
-                    bridge.strokeColor = .clear
-                    bridge.position = CGPoint(x: p.x, y: p.y - inset)
-                    mat.addChild(bridge)
-                }
-            }
+        mat.name = "boardBackdrop"
+        mat.zPosition = -12
+        mat.position = CGPoint(x: gameplayLayout.board.midX, y: gameplayLayout.board.midY)
+        var transform = CGAffineTransform(translationX: -mat.position.x, y: -mat.position.y)
+        let path = boardContourPath.copy(using: &transform)!
+        let rim = worldTheme.boardRimColor
+        for (width, color, glow) in [(CGFloat(8), rim.withAlphaComponent(0.38), CGFloat(3)),
+                                      (CGFloat(5), rim, CGFloat(0)),
+                                      (CGFloat(2.5), UIColor(hex: worldTheme.id == "ice" ? "#ECFEFF" : "#FFF1CE"), CGFloat(0)),
+                                      (CGFloat(0.7), rim.darker(by: 0.15), CGFloat(0))] {
+            let edge = SKShapeNode(path: path)
+            edge.fillColor = UIColor(hex: "#122C4D")
+            edge.strokeColor = color
+            edge.lineWidth = width
+            edge.glowWidth = glow
+            edge.lineJoin = .round
+            mat.addChild(edge)
         }
         worldNode.addChild(mat)
     }
@@ -1212,6 +1175,7 @@ final class GameScene: SKScene {
     func cellAt(_ point: CGPoint) -> Pos? {
         for r in 0..<rows {
             for c in 0..<cols {
+                guard levelConfig.layout.mask?[r][c] ?? true else { continue }
                 let p = self.point(forRow: r, col: c)
                 let rect = CGRect(
                     x: p.x - tileSize / 2,
@@ -1937,7 +1901,7 @@ final class GameScene: SKScene {
     }
 
     func makeTileNode(for cell: Cell) -> SKNode {
-        BoardRenderer.makeTile(cell: cell, size: tileSize, accessibilityLabel: tileAccessibilityLabel(for: cell))
+        BoardRenderer.makeTile(cell: cell, size: tileSize, accessibilityLabel: tileAccessibilityLabel(for: cell), theme: worldTheme)
     }
 
     /// VoiceOver description for a board tile: fruit, then any special and any

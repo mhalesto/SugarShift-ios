@@ -14,6 +14,16 @@ extension GameScene {
         return snapshot
     }
 
+    func boardSnapshot() -> [Pos: Cell] {
+        var snapshot: [Pos: Cell] = [:]
+        for r in grid.indices {
+            for c in grid[r].indices {
+                if let cell = grid[r][c] { snapshot[Pos(r: r, c: c)] = cell }
+            }
+        }
+        return snapshot
+    }
+
     func triggeredBombCount(in positions: Set<Pos>) -> Int {
         positions.reduce(0) { total, p in
             total + (grid[p.r][p.c]?.special == .bomb ? 1 : 0)
@@ -24,6 +34,16 @@ extension GameScene {
                                     cleared: Set<Pos>,
                                     damaged: Set<Pos>,
                                     triggeredBombs: Int = 0) {
+        for p in cleared {
+            if let piece = preClear[p]?.piece {
+                objectiveTracker.consume(.piecesCleared(color: piece.color, count: 1))
+            }
+        }
+        for p in damaged {
+            if let blocker = preClear[p]?.blocker, grid[p.r][p.c]?.blocker == nil {
+                objectiveTracker.consume(.blockerDestroyed(type: blocker.type, count: 1))
+            }
+        }
         if case .collectColor(let index, _) = levelConfig.goal {
             let targetColor = palette[max(0, index) % palette.count]
             let collected = cleared.filter { preClear[$0]?.color.lowercased() == targetColor.lowercased() }.count
@@ -52,8 +72,9 @@ extension GameScene {
             opened.insert(p)
         }
 
-        let adjacent = Engine.openAdjacentChests(&grid,
-                                                 near: clearResult.cleared.union(clearResult.damagedBlockers))
+        // clearMatches owns adjacent damage; applying it here again would turn
+        // every adjacent hit into two hits and bypass multi-layer rules.
+        let adjacent = Set<Pos>()
         opened.formUnion(adjacent)
         guard !opened.isEmpty else { return [] }
 
@@ -176,7 +197,9 @@ extension GameScene {
     }
 
     func attemptSwap(_ a: Pos, _ b: Pos) {
-        guard !isResolving, movesLeft > 0 else { return }
+        guard canAcceptBoardInput, movesLeft > 0 else { return }
+        gamePhase = .swapping
+        conveyorAdvancedThisTurn = false
         isResolving = true
         clearSpecialBlastPreview()
         cascadeDepth = 0
@@ -366,14 +389,24 @@ extension GameScene {
                                     tint: UIColor,
                                     scorePerTile: Int,
                                     center: CGPoint,
-                                    presentation: ClearPresentationPlan? = nil) {
+                                    presentation: ClearPresentationPlan? = nil,
+                                    context: ClearContext = .special) {
         let resolvedMatches = turnConsumesMove
             ? applySugarRushIfReady(to: matches, depth: 1)
             : matches
-        let preClear = cellSnapshot(for: resolvedMatches)
+        let preClear = boardSnapshot()
         let triggeredBombs = triggeredBombCount(in: resolvedMatches)
-        let specialsInChain = preClear.values.reduce(into: 0) { $0 += ($1.special != nil ? 1 : 0) }
-        let clearResult = Engine.clearMatches(&grid, matches: resolvedMatches)
+        let specialsInChain = resolvedMatches.filter { preClear[$0]?.special != nil }.count
+        let clearResult = Engine.clearMatches(&grid, matches: resolvedMatches,
+                                              context: presentation?.secondSpecial != nil ? .combo : context)
+        let impactedPositions = clearResult.cleared.union(clearResult.damagedBlockers)
+        let worldSequence = worldComboSequence(for: presentation, affectedCount: impactedPositions.count)
+        func tileImpactDelay(at position: Pos) -> TimeInterval {
+            let normalDelay = presentation?.delay(for: position) ?? 0
+            guard let worldSequence else { return normalDelay }
+            return worldSequence.impactAt + min(normalDelay,
+                worldSequence.lastTileImpactAt - worldSequence.impactAt)
+        }
         let affected = max(1, clearResult.affectedCount)
         totalCascadeClears += affected
         if affected >= 8 {
@@ -401,14 +434,16 @@ extension GameScene {
         _ = openChestsAfterClear(preClear: preClear,
                                   clearResult: clearResult)
 
-        if let presentation {
+        if let worldSequence, let presentation {
+            playWorldCombo(worldSequence, plan: presentation, affected: impactedPositions)
+        } else if let presentation {
             playClearPresentation(presentation, tint: tint)
         }
-        Audio.shared.play(.fruitBreak, pan: soundPan(at: center))
+        if worldSequence == nil { Audio.shared.play(.fruitBreak, pan: soundPan(at: center)) }
 
         for p in clearResult.cleared {
             guard let n = nodes[p.r][p.c] else { continue }
-            let impactDelay = presentation?.delay(for: p) ?? 0
+            let impactDelay = tileImpactDelay(at: p)
             let burstTint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
             let impactPosition = n.position
             let fruitTexture = (n.childNode(withName: "emoji") as? SKSpriteNode)?.texture
@@ -439,7 +474,7 @@ extension GameScene {
 
         for p in clearResult.damagedBlockers {
             guard let n = nodes[p.r][p.c] else { continue }
-            let impactDelay = presentation?.delay(for: p) ?? 0
+            let impactDelay = tileImpactDelay(at: p)
             let impactPosition = n.position
             let blockerType = preClear[p]?.blocker?.type
             let tint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
@@ -467,7 +502,8 @@ extension GameScene {
             let flash = Effects.makeImpactFlash(at: center, big: true)
             worldNode.addChild(flash)
         }
-        Effects.showComboBanner(text: banner, color: tint, in: self)
+        Effects.showComboBanner(text: worldSequence == nil ? banner : worldTheme.comboTitle,
+                                color: worldSequence == nil ? tint : worldTheme.glowColor, in: self)
         let comboPoints = scoreForClear(preClear: preClear,
                                         clearResult: clearResult,
                                         pointsPerTile: scorePerTile,
@@ -479,16 +515,21 @@ extension GameScene {
         score += comboPoints
         feedPiggyBank(scoreEarned: comboPoints)
         showObjectiveCompleteIfNeeded()
-        Effects.shake(worldNode,
-                      intensity: presentation?.isMajor == true ? 12 : min(8, CGFloat(affected) * 0.55),
-                      duration: presentation?.isMajor == true ? 0.34 : 0.24)
+        if worldSequence == nil {
+            Effects.shake(worldNode,
+                          intensity: presentation?.isMajor == true ? 12 : min(8, CGFloat(affected) * 0.55),
+                          duration: presentation?.isMajor == true ? 0.34 : 0.24)
+        }
         let presentationDelay = presentation?.maximumDelay(in: resolvedMatches) ?? 0
-        run(.wait(forDuration: max(0.24, presentationDelay + 0.20))) { [weak self] in
+        let clearDuration = worldSequence?.finishesAt ?? max(0.24, presentationDelay + 0.20)
+        run(.wait(forDuration: clearDuration)) { [weak self] in
+            self?.worldNode.childNode(withName: "worldComboPresentation")?.removeFromParent()
             self?.applyCollapseAndRefill()
         }
     }
 
     func resolveCascade() {
+        gamePhase = .resolvingMatches
         let groups = Engine.findMatchGroups(grid)
         let squares = Engine.findSquares(grid)
         guard !(groups.isEmpty && squares.isEmpty) else {
@@ -499,6 +540,7 @@ extension GameScene {
         cascadeDepth += 1
         let depth = cascadeDepth
         maxCascadeDepth = max(maxCascadeDepth, depth)
+        objectiveTracker.consume(.combo(depth: depth))
 
         // Build the full cleared set (groups + special detonations)
         var matches = Set<Pos>()
@@ -534,7 +576,7 @@ extension GameScene {
         let specialSpawn = effectiveSpawn
         let specialSpawnColor = specialSpawn.flatMap { grid[$0.position.r][$0.position.c]?.color }
 
-        let preClear = cellSnapshot(for: matches)
+        let preClear = boardSnapshot()
         let triggeredBombs = triggeredBombCount(in: matches)
         let clearResult = Engine.clearMatches(&grid, matches: matches)
         let cleared = clearResult.affectedCount
@@ -543,7 +585,7 @@ extension GameScene {
             return
         }
         totalCascadeClears += cleared
-        let specialsInChain = preClear.values.reduce(into: 0) { $0 += ($1.special != nil ? 1 : 0) }
+        let specialsInChain = matches.filter { preClear[$0]?.special != nil }.count
         let cascadeCredit = turnIntent == .playerSmash ? 0 : (depth == 1 ? 1.0 : 0.50)
         recordChainProgress(tilesCleared: clearResult.cleared.count,
                             blockersDamaged: clearResult.damagedBlockers.count,
@@ -580,7 +622,7 @@ extension GameScene {
 
         let feedback = TurnFeedbackPolicy.feedback(depth: depth, cleared: cleared)
         let isBigSmash = feedback.tier >= .big
-        playTriggeredSpecialEffects(preClear: preClear)
+        playTriggeredSpecialEffects(preClear: preClear.filter { matches.contains($0.key) })
         Audio.shared.play(.fruitBreak, pan: soundPan(at: centroid))
 
         var nodesToRemove: [SKNode] = []
@@ -726,6 +768,18 @@ extension GameScene {
     }
 
     func finishCascadeTurn() {
+        if turnConsumesMove, !conveyorAdvancedThisTurn {
+            conveyorAdvancedThisTurn = true
+            let moved = Engine.applyConveyors(grid, belts: levelConfig.layout.conveyorBelts)
+            if moved != grid {
+                grid = moved
+                rebuildAllNodes()
+                animateBoardMechanicsTick()
+                gamePhase = .falling
+                run(.wait(forDuration: 0.16)) { [weak self] in self?.applyCollapseAndRefill() }
+                return
+            }
+        }
         if turnConsumesMove,
            !bossDamageAppliedThisTurn,
            chainSpecialsTriggered > 0 || cascadeDepth >= 3 {

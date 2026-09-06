@@ -179,7 +179,7 @@ extension GameScene {
         var map: [String: SKNode] = [:]
         for r in 0..<rows {
             for c in 0..<cols {
-                if let cell = oldGrid[r][c], let n = nodes[r][c] {
+                if let cell = oldGrid[r][c], cell.hasPiece, let n = nodes[r][c] {
                     map[cell.id] = n
                 }
             }

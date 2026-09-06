@@ -85,7 +85,7 @@ struct LevelChapter: Equatable {
     let range: ClosedRange<Int>
 }
 
-enum LevelDifficulty: String, Equatable {
+enum LevelDifficulty: String, Equatable, Codable {
     case normal = "Normal"
     case hard = "Hard"
     case superHard = "Super Hard"
@@ -131,7 +131,7 @@ enum LevelModifier: String, Equatable, CaseIterable {
     }
 }
 
-struct LevelReward: Equatable {
+struct LevelReward: Equatable, Codable {
     let title: String
     let coins: Int
     let lives: Int
@@ -346,6 +346,22 @@ struct LevelConfig {
     /// Boss levels cap each chapter — extra reward, dramatic banner, harder goal.
     /// Currently every multiple of 10 plus levels with the `.finale` archetype.
     let isBoss: Bool
+    let definition: LevelDefinition?
+
+    var pieceTypes: [PieceColor] {
+        definition?.pieceTypes ?? Array(PieceColor.allCases.prefix(max(3, min(colors, PieceColor.allCases.count))))
+    }
+    var spawnWeights: [PieceColor: Double] {
+        definition?.spawnWeights ?? Dictionary(uniqueKeysWithValues: pieceTypes.map { ($0, 1.0) })
+    }
+    var tutorial: LevelTutorial? { definition?.tutorial }
+    var objectives: [LevelObjective] {
+        var result = definition?.objectives ?? goal.objectives(targetScore: target, blockerCount: layout.blockerCount)
+        if isBoss, !result.contains(where: { if case .breakBossShield = $0 { return true }; return false }) {
+            result.append(.breakBossShield(count: number >= 100 ? 3 : 2))
+        }
+        return result
+    }
 
     init(number: Int,
          rows: Int, cols: Int, colors: Int,
@@ -359,23 +375,35 @@ struct LevelConfig {
          bombSpawnRunLength: Int?,
          blurb: String,
          modifiers: [LevelModifier] = [],
-         isBoss: Bool = false) {
+         isBoss: Bool = false,
+         definition: LevelDefinition? = nil) {
         self.number = number
-        self.rows = rows
-        self.cols = cols
-        self.colors = colors
-        self.moves = moves
+        self.rows = definition?.boardHeight ?? rows
+        self.cols = definition?.boardWidth ?? cols
+        self.colors = definition?.pieceTypes.count ?? colors
+        self.moves = definition?.moves ?? moves
         self.target = target
         self.archetype = archetype
-        self.difficulty = difficulty
+        self.difficulty = definition?.difficulty ?? difficulty
         self.skin = skin
-        self.layout = layout
+        if let definition {
+            self.layout = LevelLayout(mask: definition.mask, iceCount: 0, lockCount: 0,
+                                      jellyCount: 0, crateCount: 0, colorLockCount: 0,
+                                      startingBombs: 0,
+                                      portalPairs: definition.portals.map { LevelPortal(from: $0.from.position, to: $0.to.position) },
+                                      conveyorBelts: definition.conveyors.map { ConveyorBelt(row: $0.row, direction: $0.direction) },
+                                      ingredientCount: definition.ingredientCount,
+                                      keyCount: definition.keyCount)
+        } else {
+            self.layout = layout
+        }
         self.goal = goal
-        self.starThresholds = starThresholds
+        self.starThresholds = definition.map { ($0.starThresholds.one, $0.starThresholds.two, $0.starThresholds.three) } ?? starThresholds
         self.bombSpawnRunLength = bombSpawnRunLength
         self.blurb = blurb
         self.modifiers = modifiers
         self.isBoss = isBoss
+        self.definition = definition
     }
 }
 
@@ -424,6 +452,17 @@ enum Levels {
         if level == endlessLevel { return endlessConfig() }
         if level == towerLevel { return towerConfig() }
         let n = max(1, min(level, count))
+        if let definition = definition(for: n) {
+            return LevelConfig(number: n, rows: definition.boardHeight, cols: definition.boardWidth,
+                               colors: definition.pieceTypes.count, moves: definition.moves,
+                               target: definition.starThresholds.one,
+                               archetype: n >= 6 ? .combo : .starter, difficulty: .normal,
+                               skin: .midnight, layout: .default,
+                               goal: .collectColor(index: 0, count: definition.objectives[0].target),
+                               starThresholds: (definition.starThresholds.one, definition.starThresholds.two, definition.starThresholds.three),
+                               bombSpawnRunLength: nil,
+                               blurb: "Collect each fruit target.", isBoss: n.isMultiple(of: 10), definition: definition)
+        }
         switch n {
         case 1:  return mk(n, 5, 5, 3, 28,  1_100,  .starter,   .midnight,
                            layout(mask: nil),
@@ -599,6 +638,35 @@ enum Levels {
         default: return mk(1, 8, 8, 5, 25, 2000, .starter, .midnight,
                            layout(mask: full8()), "")
         }
+    }
+
+    /// The first world introduces one concept at a time. IDs and the generated
+    /// campaign beyond this authored onboarding remain stable for old saves.
+    static func definition(for level: Int) -> LevelDefinition? {
+        guard (1...15).contains(level) else { return nil }
+        let rows = level <= 5 ? 6 : 7
+        let columns = 7
+        let pieces: [PieceColor] = level <= 5 ? [.orange, .grape, .blueberry]
+            : [.orange, .grape, .blueberry, .leaf]
+        let count = 10 + (level - 1) / 3 * 2
+        let goals = Array(pieces.prefix(3)).map { LevelObjective.collectPieces(color: $0, count: count) }
+        let tutorial: LevelTutorial?
+        switch level {
+        case 1: tutorial = .basicSwap
+        case 6: tutorial = .striped
+        case 11: tutorial = .wrapped
+        case 12: tutorial = .colorBomb
+        default: tutorial = nil
+        }
+        let scoreTargets = [1_100, 1_700, 2_300, 2_900, 3_300, 2_700, 3_900, 4_150,
+                            4_600, 5_200, 2_600, 2_900, 3_300, 3_300, 3_600]
+        let stars = starThresholds(forLevel: level, target: scoreTargets[level - 1])
+        return LevelDefinition(id: level, boardWidth: columns, boardHeight: rows,
+                               activeCells: (0..<rows).flatMap { row in (0..<columns).map { LevelCell(row: row, column: $0) } },
+                               pieceTypes: pieces, moves: 28 + (level - 1) / 3,
+                               objectives: goals,
+                               starThresholds: LevelStarThresholds(one: stars.one, two: stars.two, three: stars.three),
+                               tutorial: tutorial)
     }
 
     private static func generatedActConfig(_ n: Int) -> LevelConfig {

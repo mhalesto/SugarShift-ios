@@ -11,7 +11,7 @@ enum LevelBoardFactory {
                                  seed: UInt64,
                                  minimumOpeningMoveScore: Int = 0,
                                  attempts: Int = 24) -> LevelBoardBuild {
-        let palette = Array(Theme.colors.prefix(config.colors))
+        let palette = config.pieceTypes.map(\.legacyToken)
         var bestGrid: Grid = []
         var bestSeed = seed
         var bestScore = -1
@@ -25,12 +25,23 @@ enum LevelBoardFactory {
                                                 cols: config.cols,
                                                 colors: palette,
                                                 mask: config.layout.mask,
+                                                spawnWeights: config.spawnWeights,
                                                 rng: &rng)
             seedBlockers(layout: config.layout, grid: &grid, rng: &rng)
             seedAdvancedMechanics(layout: config.layout, grid: &grid, palette: palette, rng: &rng)
             seedIngredients(layout: config.layout, grid: &grid, rng: &rng)
             seedKeys(layout: config.layout, grid: &grid, rng: &rng)
             seedStartingBombs(layout: config.layout, grid: &grid, rng: &rng)
+            for placement in config.definition?.fixedBlockers ?? [] {
+                let p = placement.position.position
+                guard p.r >= 0, p.r < grid.count, p.c >= 0, p.c < grid[p.r].count else { continue }
+                grid[p.r][p.c]?.blocker = Blocker(type: placement.type, hits: placement.hits)
+            }
+            for r in grid.indices {
+                for c in grid[r].indices where grid[r][c]?.blocker?.type.rules.canContainPiece == false {
+                    grid[r][c]?.piece = nil
+                }
+            }
             guard Engine.findMatches(grid).isEmpty,
                   Engine.findSquares(grid).isEmpty else { continue }
 

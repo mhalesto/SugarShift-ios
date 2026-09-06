@@ -552,13 +552,7 @@ enum Persistence {
     /// Highest level the player can play. Equals max(currentLevel, 1 + highest level with stars).
     /// All N <= this value are unlocked; N > this value are locked.
     static var highestUnlockedLevel: Int {
-        var hi = currentLevel
-        for n in 1...Levels.count {
-            if starsForLevel(n) > 0 {
-                hi = max(hi, n + 1)
-            }
-        }
-        return hi
+        CampaignProgress.highestUnlockedLevel(currentLevel: currentLevel)
     }
 
     static func hasSeenHint(_ key: String) -> Bool {
@@ -804,6 +798,7 @@ enum Persistence {
     }
 
     private static func clearLocalProgressValues() {
+        d.removeObject(forKey: CampaignProgress.storageKey)
         [K.level, K.totalScore, K.cash, K.lives, K.lifeRefAt, K.shuffleCount,
          K.movesQuantity, K.hammerCount, K.swapCount,
          K.piggyCoins, K.doublerExp, K.storeKitDeliveredTransactions]

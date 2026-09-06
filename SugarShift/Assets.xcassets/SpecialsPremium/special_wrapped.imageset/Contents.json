@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "special_wrapped.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

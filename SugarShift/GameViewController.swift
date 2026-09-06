@@ -60,7 +60,13 @@ final class GameViewController: UIViewController {
         scene.initialDailyChallenge = dailyChallenge
         scene.scaleMode = .resizeFill
         scene.backgroundColor = .clear
-        scene.onChooseLevel = { [weak self] in self?.onChooseLevel?() }
+        scene.onChooseLevel = { [weak self] in
+            guard let self else { return }
+            if let onChooseLevel = self.onChooseLevel { onChooseLevel() }
+            else if let window = self.view.window {
+                window.rootViewController = LevelMapViewController()
+            }
+        }
         skView.presentScene(scene)
     }
 

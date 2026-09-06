@@ -59,7 +59,7 @@ final class GameScene: SKScene {
     }
     var rows: Int { levelConfig.rows }
     var cols: Int { levelConfig.cols }
-    var palette: [String] { Array(Theme.colors.prefix(levelConfig.colors)) }
+    var palette: [String] { levelConfig.pieceTypes.map(\.legacyToken) }
     var skin: BoardSkin { levelConfig.skin }
 
     var levelNumber: Int { levelConfig.number }
@@ -106,7 +106,27 @@ final class GameScene: SKScene {
     var firstSelection: Pos?
     var firstSelectionNode: SKNode?
     var dragStartPoint: CGPoint?
-    var isResolving = false
+    var gamePhase: GamePhase = .waitingForInput
+    var isResolving = false {
+        didSet {
+            if isResolving {
+                if gamePhase.acceptsBoardInput { gamePhase = .resolvingMatches }
+            } else if !levelEnded {
+                gamePhase = .waitingForInput
+            }
+        }
+    }
+    var canAcceptBoardInput: Bool {
+        !isResolving && !levelEnded && gamePhase.acceptsBoardInput
+            && settingsCard == nil && shopCard == nil && modalCard == nil
+            && preLevelPerkOverlay == nil && towerOverlay == nil
+            && levelTesterOverlay == nil
+    }
+    var gameplayLayout: GameplayLayout {
+        GameplayLayout(size: size, safeTop: safeTop, safeBottom: safeBottom,
+                       rows: rows, columns: cols)
+    }
+    var conveyorAdvancedThisTurn = false
     var cascadeDepth = 0
     /// Once a deep cascade crosses the confetti threshold, every later step
     /// crosses it too; this keeps one chain from stacking emitters.
@@ -189,14 +209,14 @@ final class GameScene: SKScene {
         case blockers
     }
 
-    var score: Int = 0 { didSet { updateHUD() } }
+    var score: Int = 0 { didSet { objectiveTracker.consume(.scoreEarned(max(0, score - oldValue))); updateHUD() } }
     var movesLeft: Int = 0 { didSet { updateHUD(); maybeLowMovesTension(old: oldValue) } }
     var startingBlockers = 0 { didSet { updateHUD() } }
     var collectedGoalTiles = 0 { didSet { updateHUD() } }
-    var createdSpecials = 0 { didSet { updateHUD() } }
-    var detonatedBombs = 0 { didSet { updateHUD() } }
-    var collectedIngredients = 0 { didSet { updateHUD() } }
-    var collectedKeys = 0 { didSet { updateHUD() } }
+    var createdSpecials = 0 { didSet { objectiveTracker.consume(.specialsCreated(count: max(0, createdSpecials - oldValue))); updateHUD() } }
+    var detonatedBombs = 0 { didSet { objectiveTracker.consume(.bombsDetonated(count: max(0, detonatedBombs - oldValue))); updateHUD() } }
+    var collectedIngredients = 0 { didSet { objectiveTracker.consume(.ingredientsCollected(count: max(0, collectedIngredients - oldValue))); updateHUD() } }
+    var collectedKeys = 0 { didSet { objectiveTracker.consume(.keysCollected(count: max(0, collectedKeys - oldValue))); updateHUD() } }
     var openedChests = 0 { didSet { updateHUD() } }
     var maxCascadeDepth = 0
     var totalCascadeClears = 0
@@ -212,6 +232,7 @@ final class GameScene: SKScene {
     /// One-move snapshot taken at the start of every player swap. Overwritten
     /// on each new swap so only the most recent move is undoable.
     struct UndoSnapshot {
+        let objectiveTracker: ObjectiveTracker
         let grid: Grid
         let nodes: [[SKNode?]]
         let score: Int
@@ -330,6 +351,11 @@ final class GameScene: SKScene {
     var progressFill: SKShapeNode!
     var progressTrack: SKShapeNode!
     var cashLabel: SKLabelNode!
+    var objectiveTracker = ObjectiveTracker(objectives: [])
+    var objectiveLabels: [SKLabelNode] = []
+    var premiumStarNodes: [SKNode] = []
+    var lastDisplayedStars = 0
+    var boosterPriceLabels: [String: SKLabelNode] = [:]
 
     // MARK: - Lifecycle
 
@@ -343,6 +369,7 @@ final class GameScene: SKScene {
 
         worldNode = SKNode()
         addChild(worldNode)
+        GameArt.preload()
 
         // Load persisted progress BEFORE building the HUD so the level number,
         // skin, and counts all match what we left off on.
@@ -397,50 +424,7 @@ final class GameScene: SKScene {
     }
 
     func rebuildChapterBackdrop() {
-        childNode(withName: "chapterBackdrop")?.removeFromParent()
-        guard size.width > 0, size.height > 0 else { return }
-
-        let chapter = Levels.chapter(for: levelNumber)
-        let palette: [UIColor]
-        switch chapter.title {
-        case "Frost Valley":
-            palette = [UIColor(hex: "#7DD3FC"), UIColor(hex: "#E0F2FE"), UIColor(hex: "#A7F3D0")]
-        case "Bomb Bakery":
-            palette = [UIColor(hex: "#F97316"), UIColor(hex: "#FDE68A"), UIColor(hex: "#F472B6")]
-        case "Crown Gate":
-            palette = [UIColor(hex: "#FACC15"), UIColor(hex: "#F9A8D4"), UIColor(hex: "#A78BFA")]
-        case "Royal Rush":
-            palette = [UIColor(hex: "#8B5CF6"), UIColor(hex: "#22D3EE"), UIColor(hex: "#F472B6")]
-        case "Sugar Throne":
-            palette = [UIColor(hex: "#0F172A"), UIColor(hex: "#7C3AED"), UIColor(hex: "#F59E0B")]
-        default:
-            palette = [UIColor(hex: "#FBCFE8"), UIColor(hex: "#FDE68A"), UIColor(hex: "#BAE6FD")]
-        }
-
-        let backdrop = SKNode()
-        backdrop.name = "chapterBackdrop"
-        backdrop.zPosition = -2500
-
-        let bandH = size.height / CGFloat(palette.count)
-        for (index, color) in palette.enumerated() {
-            let band = SKShapeNode(rectOf: CGSize(width: size.width, height: bandH + 2))
-            band.fillColor = color.withAlphaComponent(index == 0 ? 0.82 : 0.72)
-            band.strokeColor = .clear
-            band.position = CGPoint(x: 0, y: size.height / 2 - bandH * (CGFloat(index) + 0.5))
-            backdrop.addChild(band)
-        }
-
-        for i in 0..<18 {
-            let sparkle = SKShapeNode(rectOf: CGSize(width: 5, height: 5), cornerRadius: 1)
-            sparkle.fillColor = UIColor.white.withAlphaComponent(i.isMultiple(of: 3) ? 0.28 : 0.16)
-            sparkle.strokeColor = .clear
-            sparkle.zRotation = .pi / 4
-            sparkle.position = CGPoint(x: CGFloat.random(in: -size.width / 2...size.width / 2),
-                                       y: CGFloat.random(in: -size.height / 2...size.height / 2))
-            backdrop.addChild(sparkle)
-        }
-
-        addChild(backdrop)
+        buildWorldBackdrop()
     }
 
     // MARK: - Combo / momentum meter
@@ -466,11 +450,10 @@ final class GameScene: SKScene {
 
     func buildComboMeter() {
         comboMeterContainer?.removeFromParent()
-        let headerH: CGFloat = 170
-        let headerBottom = size.height / 2 - safeTop - 8 - headerH
         let container = SKNode()
         container.name = "smashMeterButton"
-        container.position = CGPoint(x: 0, y: headerBottom - 16)
+        container.position = CGPoint(x: -20, y: gameplayLayout.utility.midY)
+        container.setScale(min(0.85, gameplayLayout.scale))
         container.zPosition = 58
         container.alpha = 0
         addChild(container)
@@ -512,7 +495,7 @@ final class GameScene: SKScene {
         caption.fontColor = .white
         caption.verticalAlignmentMode = .center
         caption.horizontalAlignmentMode = .center
-        caption.position = CGPoint(x: 0, y: -15)
+        caption.position = CGPoint(x: 0, y: -13)
         container.addChild(caption)
         comboMeterCaption = caption
 
@@ -521,7 +504,7 @@ final class GameScene: SKScene {
         flow.fontColor = UIColor(hex: "#FDE68A")
         flow.verticalAlignmentMode = .center
         flow.horizontalAlignmentMode = .center
-        flow.position = CGPoint(x: 0, y: 17)
+        flow.position = CGPoint(x: -150, y: 0)
         flow.alpha = 0
         container.addChild(flow)
         flowMeterLabel = flow
@@ -816,7 +799,8 @@ final class GameScene: SKScene {
     // MARK: - Undo last move
 
     func takeUndoSnapshot() {
-        undoSnapshot = UndoSnapshot(grid: grid,
+        undoSnapshot = UndoSnapshot(objectiveTracker: objectiveTracker,
+                                     grid: grid,
                                      nodes: nodes,
                                      score: score,
                                      movesLeft: movesLeft,
@@ -933,6 +917,7 @@ final class GameScene: SKScene {
         mercySpecialGrantedThisAttempt = snapshot.mercySpecialGrantedThisAttempt
         flowLevel = snapshot.flowLevel
         bestFlowLevel = snapshot.bestFlowLevel
+        objectiveTracker = snapshot.objectiveTracker
         turnCreatedSpecials = 0
         turnPrimaryAnchor = nil
         turnScoreAtStart = score
@@ -948,16 +933,9 @@ final class GameScene: SKScene {
     func buildUndoButton() {
         undoButton?.removeFromParent()
         let btn = SKNode()
-        if footerCard != nil {
-            let cardW = size.width - 24
-            let cardH: CGFloat = 180
-            let rightX = cardW / 2 - 18
-            let topRowY = cardH / 2 - 28
-            btn.position = CGPoint(x: rightX - 78, y: topRowY)
-        } else {
-            btn.position = CGPoint(x: size.width / 2 - 100, y: -size.height / 2 + safeBottom + 160)
-        }
-        btn.zPosition = 3
+        btn.position = CGPoint(x: gameplayLayout.utility.maxX - 25, y: gameplayLayout.utility.midY)
+        btn.setScale(0.65)
+        btn.zPosition = 59
         btn.name = "undoButton"
 
         let shadow = SKShapeNode(circleOfRadius: 22)
@@ -997,7 +975,7 @@ final class GameScene: SKScene {
         badgeBg.addChild(badge)
         undoBadge = badge
 
-        (footerCard ?? self).addChild(btn)
+        addChild(btn)
         undoButton = btn
         refreshUndoButton()
     }
@@ -1059,40 +1037,35 @@ final class GameScene: SKScene {
     // MARK: - Board layout
 
     func layoutBoard() {
-        let headerH: CGFloat = 170
-        let footerH: CGFloat = 180
-        let headerBottom = size.height / 2 - safeTop - 8 - headerH
-        let footerTop = -size.height / 2 + safeBottom + 8 + footerH
-
-        let pad: CGFloat = 14
-        let safeWidth = size.width - pad * 2
-        let safeHeight = (headerBottom - footerTop) - 16
-        let side = min(safeWidth, safeHeight)
-        gap = Persistence.shapedBoard ? 0 : side * 0.012
-        tileSize = (side - gap * CGFloat(cols + 1)) / CGFloat(cols)
-        let boardSide = tileSize * CGFloat(cols) + gap * CGFloat(cols + 1)
-
-        let centerY = (headerBottom + footerTop) / 2
-        boardOrigin = CGPoint(
-            x: -boardSide / 2 + gap + tileSize / 2,
-            y: centerY + boardSide / 2 - gap - tileSize / 2
-        )
+        let layout = gameplayLayout
+        gap = layout.gap
+        tileSize = layout.tileSize
+        boardOrigin = CGPoint(x: layout.board.minX + tileSize / 2,
+                              y: layout.board.maxY - tileSize / 2)
 
         worldNode.childNode(withName: "boardBackdrop")?.removeFromParent()
         worldNode.childNode(withName: "shapeMat")?.removeFromParent()
         worldNode.childNode(withName: "tileCornerFillers")?.removeFromParent()
         worldNode.childNode(withName: "mechanicsLayer")?.removeFromParent()
-        if Persistence.shapedBoard {
+        if levelConfig.layout.mask != nil && Persistence.shapedBoard {
             buildShapeMat()
             buildInteriorCornerFillers()
-        } else {
-            let bg = SKShapeNode(rectOf: CGSize(width: boardSide + 12, height: boardSide + 12), cornerRadius: 22)
+        }
+        do {
+            let bg = SKShapeNode(rectOf: CGSize(width: layout.board.width + 12,
+                                               height: layout.board.height + 12), cornerRadius: 17)
             bg.name = "boardBackdrop"
-            bg.position = CGPoint(x: 0, y: centerY)
-            bg.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.92)
-            bg.strokeColor = UIColor(white: 1, alpha: 0.08)
-            bg.lineWidth = 1
-            bg.zPosition = -10
+            bg.position = CGPoint(x: layout.board.midX, y: layout.board.midY)
+            bg.fillColor = UIColor(hex: "#10263F")
+            bg.strokeColor = UIColor(hex: worldTheme.id == "ice" ? "#8FE8FF" : "#FFD0A1")
+            bg.lineWidth = 3
+            bg.glowWidth = 2
+            let rim = SKShapeNode(rectOf: CGSize(width: layout.board.width + 8, height: layout.board.height + 8), cornerRadius: 15)
+            rim.fillColor = .clear
+            rim.strokeColor = UIColor(hex: worldTheme.id == "ice" ? "#ECFDFF" : "#FFF0D5")
+            rim.lineWidth = 0.8
+            bg.addChild(rim)
+            bg.zPosition = -12
             worldNode.addChild(bg)
         }
         buildMechanicsLayer()
@@ -1255,6 +1228,12 @@ final class GameScene: SKScene {
     // MARK: - Game lifecycle
 
     func startNewGame() {
+        worldNode?.childNode(withName: "worldComboPresentation")?.removeFromParent()
+        if let worldNode { Effects.cancelShake(worldNode) }
+        gamePhase = .loading
+        objectiveTracker = ObjectiveTracker(objectives: levelConfig.objectives)
+        lastDisplayedStars = 0
+        conveyorAdvancedThisTurn = false
         score = 0
         movesLeft = movesAtStart
         startingBlockers = 0
@@ -1370,6 +1349,7 @@ final class GameScene: SKScene {
             applyFailStreakAssistIfNeeded()
         }
         scheduleIdleHint()
+        gamePhase = .waitingForInput
     }
 
     func openingMoveQualityTarget() -> Int {
@@ -1457,6 +1437,8 @@ final class GameScene: SKScene {
 
     func showSpecialHint(_ special: Special) {
         switch special {
+        case .lineBlast, .rocket, .ufo:
+            showTeachingToast(key: "advancedSpecial.\(special.rawValue)", text: String(localized: "Combine power-ups for a bigger blast!"))
         case .stripedRow, .stripedCol:
             showTeachingToast(key: "striped_created", text: String(localized: "Swap stripes into a match to clear a line."))
         case .wrapped:
@@ -1955,566 +1937,7 @@ final class GameScene: SKScene {
     }
 
     func makeTileNode(for cell: Cell) -> SKNode {
-        let container = SKNode()
-        let body = SKShapeNode(rectOf: CGSize(width: tileSize, height: tileSize), cornerRadius: tileSize * 0.22)
-        body.fillColor = skin.tileBg
-        body.strokeColor = Persistence.highContrast ? .white : skin.tileBorder
-        body.lineWidth = Persistence.highContrast ? 2 : 1
-        body.name = "body"
-        container.addChild(body)
-
-        let emoji = SKSpriteNode(texture: Theme.emojiTexture(forColor: cell.color))
-        emoji.size = CGSize(width: tileSize * 0.78, height: tileSize * 0.78)
-        emoji.name = "emoji"
-        if let blocker = cell.blocker {
-            switch blocker.type {
-            case .lock, .colorLock:
-                emoji.alpha = 0.88
-            case .ice, .jelly, .syrup, .countdown:
-                emoji.alpha = 0.78
-            case .crate, .chocolate, .chest, .vine:
-                emoji.alpha = 0.52
-            }
-        } else {
-            emoji.alpha = cell.special == .colorBomb ? 0.2 : (cell.special == .fish ? 0.3 : 1.0)
-        }
-        container.addChild(emoji)
-
-        // Ingredient overlay — a fruit basket "halo" so players can spot the
-        // tiles that need to fall to the bottom.
-        if cell.kind == .ingredient {
-            let halo = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
-                                   cornerRadius: tileSize * 0.28)
-            halo.fillColor = .clear
-            halo.strokeColor = UIColor(hex: "#34D399").withAlphaComponent(0.95)
-            halo.lineWidth = 3
-            halo.glowWidth = 4
-            halo.zPosition = 7
-            container.addChild(halo)
-            halo.run(.repeatForever(.sequence([
-                .scale(to: 1.05, duration: 0.6),
-                .scale(to: 1.0,  duration: 0.6)
-            ])))
-
-            let basket = Icons.sprite("basket.fill",
-                                      size: tileSize * 0.30,
-                                      weight: .bold,
-                                      tint: UIColor(hex: "#34D399"))
-            basket.position = CGPoint(x: tileSize * 0.30, y: -tileSize * 0.30)
-            basket.zPosition = 8
-            container.addChild(basket)
-        }
-
-        if cell.kind == .key {
-            let halo = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
-                                   cornerRadius: tileSize * 0.28)
-            halo.fillColor = UIColor(hex: "#FEF3C7").withAlphaComponent(0.16)
-            halo.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.98)
-            halo.lineWidth = 3
-            halo.glowWidth = 5
-            halo.zPosition = 7
-            container.addChild(halo)
-            halo.run(.repeatForever(.sequence([
-                .scale(to: 1.06, duration: 0.55),
-                .scale(to: 1.0,  duration: 0.55)
-            ])))
-
-            let key = Icons.sprite("key.fill",
-                                   size: tileSize * 0.32,
-                                   weight: .bold,
-                                   tint: UIColor(hex: "#FACC15"))
-            key.position = CGPoint(x: tileSize * 0.29, y: -tileSize * 0.29)
-            key.zPosition = 8
-            container.addChild(key)
-        }
-
-        if Persistence.candyLabels {
-            let labels = ["O", "G", "B", "A", "Y", "C"]
-            let idx = Theme.fruitIndex(forColor: cell.color) % labels.count
-            let tag = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-            tag.text = labels[idx]
-            tag.fontSize = max(10, tileSize * 0.22)
-            tag.fontColor = .white
-            tag.verticalAlignmentMode = .center
-            tag.horizontalAlignmentMode = .center
-            tag.position = CGPoint(x: tileSize * 0.28, y: -tileSize * 0.28)
-            tag.zPosition = 6
-
-            let bg = SKShapeNode(circleOfRadius: max(8, tileSize * 0.16))
-            bg.fillColor = UIColor(white: 0, alpha: 0.62)
-            bg.strokeColor = .white.withAlphaComponent(0.75)
-            bg.lineWidth = 1
-            bg.position = tag.position
-            bg.zPosition = 5
-            container.addChild(bg)
-            container.addChild(tag)
-        }
-
-        // Color-blind pattern overlay — a unique geometric marker per color,
-        // placed in the top-left so it doesn't fight the fruit emoji or the
-        // optional candy label in the bottom-right.
-        if Persistence.colorBlindPatterns {
-            let marker = makeColorBlindMarker(for: cell.color)
-            marker.position = CGPoint(x: -tileSize * 0.28, y: tileSize * 0.28)
-            marker.zPosition = 7
-            container.addChild(marker)
-        }
-
-        // Ice overlay — translucent icy blue + snowflake symbol
-        if let blocker = cell.blocker, blocker.type == .ice {
-            let strength: CGFloat = blocker.hits > 1 ? 0.30 : 0.18
-            let ice = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
-                                  cornerRadius: tileSize * 0.22)
-            ice.fillColor = UIColor(hex: "#7DD3FC").withAlphaComponent(strength)
-            ice.strokeColor = UIColor(hex: "#38BDF8").withAlphaComponent(0.75)
-            ice.lineWidth = 2
-            ice.glowWidth = 2
-            ice.zPosition = 4
-            container.addChild(ice)
-
-            if blocker.hits > 1 {
-                addCrackLines(to: container, tint: UIColor(hex: "#E0F2FE"), alpha: 0.90)
-            }
-
-            let frost = Icons.sprite("snowflake",
-                                     size: tileSize * 0.42,
-                                     weight: .heavy,
-                                     tint: .white)
-            frost.alpha = 0.95
-            frost.zPosition = 5
-            container.addChild(frost)
-            frost.run(.repeatForever(.sequence([
-                .fadeAlpha(to: 0.6, duration: 1.0),
-                .fadeAlpha(to: 0.95, duration: 1.0)
-            ])))
-            _ = blocker
-        }
-
-        // Lock overlay — readable tint + corner lock, leaving the fruit visible.
-        if let blocker = cell.blocker, blocker.type == .lock {
-            let scrim = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
-                                    cornerRadius: tileSize * 0.22)
-            scrim.fillColor = UIColor(hex: "#FEF3C7").withAlphaComponent(0.10)
-            scrim.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.95)
-            scrim.lineWidth = 2
-            scrim.glowWidth = 1.5
-            scrim.zPosition = 4
-            container.addChild(scrim)
-
-            let badge = SKShapeNode(circleOfRadius: tileSize * 0.17)
-            badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.78)
-            badge.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.98)
-            badge.lineWidth = 1.2
-            badge.position = CGPoint(x: -tileSize * 0.27, y: -tileSize * 0.27)
-            badge.zPosition = 5
-            container.addChild(badge)
-
-            let lock = Icons.sprite("lock.fill",
-                                    size: tileSize * 0.20,
-                                    weight: .heavy,
-                                    tint: .white)
-            lock.position = badge.position
-            lock.zPosition = 6
-            container.addChild(lock)
-            _ = blocker
-        }
-
-        if let blocker = cell.blocker, blocker.type == .jelly {
-            let jelly = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
-                                    cornerRadius: tileSize * 0.28)
-            jelly.fillColor = UIColor(hex: "#F9A8D4").withAlphaComponent(0.38)
-            jelly.strokeColor = UIColor(hex: "#EC4899").withAlphaComponent(0.70)
-            jelly.lineWidth = 2
-            jelly.glowWidth = 2
-            jelly.zPosition = 4
-            container.addChild(jelly)
-
-            let drop = Icons.sprite("drop.fill",
-                                    size: tileSize * 0.34,
-                                    weight: .bold,
-                                    tint: .white)
-            drop.alpha = 0.86
-            drop.zPosition = 5
-            container.addChild(drop)
-        }
-
-        if let blocker = cell.blocker, blocker.type == .crate {
-            let crate = SKShapeNode(rectOf: CGSize(width: tileSize - 5, height: tileSize - 5),
-                                    cornerRadius: tileSize * 0.12)
-            crate.fillColor = UIColor(hex: "#92400E").withAlphaComponent(0.62)
-            crate.strokeColor = UIColor(hex: "#FDE68A").withAlphaComponent(0.82)
-            crate.lineWidth = 2
-            crate.zPosition = 4
-            container.addChild(crate)
-
-            for angle in [CGFloat.pi / 4, -CGFloat.pi / 4] {
-                let plank = SKShapeNode(rectOf: CGSize(width: tileSize * 0.78, height: tileSize * 0.10),
-                                        cornerRadius: tileSize * 0.04)
-                plank.fillColor = UIColor(hex: "#F59E0B").withAlphaComponent(0.82)
-                plank.strokeColor = .clear
-                plank.zRotation = angle
-                plank.zPosition = 5
-                container.addChild(plank)
-            }
-
-            let hits = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-            hits.text = "\(max(1, blocker.hits))"
-            hits.fontSize = max(11, tileSize * 0.24)
-            hits.fontColor = .white
-            hits.verticalAlignmentMode = .center
-            hits.horizontalAlignmentMode = .center
-            hits.zPosition = 6
-            container.addChild(hits)
-        }
-
-        if let blocker = cell.blocker, blocker.type == .chocolate {
-            let cocoa = SKShapeNode(rectOf: CGSize(width: tileSize - 3, height: tileSize - 3),
-                                    cornerRadius: tileSize * 0.20)
-            cocoa.fillColor = UIColor(hex: "#3B1F0E").withAlphaComponent(0.92)
-            cocoa.strokeColor = UIColor(hex: "#7C3A12").withAlphaComponent(0.95)
-            cocoa.lineWidth = 2
-            cocoa.zPosition = 4
-            container.addChild(cocoa)
-
-            // Flecks of "chocolate chunks" — small round shapes scattered.
-            for offset in [CGPoint(x: -tileSize * 0.18, y: tileSize * 0.10),
-                           CGPoint(x: tileSize * 0.16,  y: -tileSize * 0.06),
-                           CGPoint(x: tileSize * 0.02,  y: tileSize * 0.22),
-                           CGPoint(x: -tileSize * 0.22, y: -tileSize * 0.18)] {
-                let chunk = SKShapeNode(circleOfRadius: tileSize * 0.07)
-                chunk.fillColor = UIColor(hex: "#6B2A0C").withAlphaComponent(0.95)
-                chunk.strokeColor = UIColor(hex: "#A75B22").withAlphaComponent(0.7)
-                chunk.lineWidth = 1
-                chunk.position = offset
-                chunk.zPosition = 5
-                container.addChild(chunk)
-            }
-
-            // Subtle "creeping" pulse so the spreader feels alive.
-            cocoa.run(.repeatForever(.sequence([
-                .fadeAlpha(to: 0.78, duration: 1.4),
-                .fadeAlpha(to: 0.95, duration: 1.4)
-            ])))
-            _ = blocker
-        }
-
-        if let blocker = cell.blocker, blocker.type == .syrup {
-            let goo = SKShapeNode(rectOf: CGSize(width: tileSize - 3, height: tileSize - 3),
-                                  cornerRadius: tileSize * 0.20)
-            goo.fillColor = UIColor(hex: "#EC4899").withAlphaComponent(0.48)
-            goo.strokeColor = UIColor(hex: "#FBCFE8").withAlphaComponent(0.92)
-            goo.lineWidth = 2
-            goo.glowWidth = 3
-            goo.zPosition = 4
-            container.addChild(goo)
-
-            // Drip droplets on the bottom edge to sell the "sticky" feeling.
-            for offset in [CGPoint(x: -tileSize * 0.20, y: -tileSize * 0.30),
-                           CGPoint(x:  tileSize * 0.08, y: -tileSize * 0.36),
-                           CGPoint(x:  tileSize * 0.26, y: -tileSize * 0.28)] {
-                let drop = SKShapeNode(circleOfRadius: tileSize * 0.06)
-                drop.fillColor = UIColor(hex: "#F472B6").withAlphaComponent(0.85)
-                drop.strokeColor = UIColor.white.withAlphaComponent(0.55)
-                drop.lineWidth = 1
-                drop.position = offset
-                drop.zPosition = 5
-                container.addChild(drop)
-                drop.run(.repeatForever(.sequence([
-                    .moveBy(x: 0, y: -1.5, duration: 0.8),
-                    .moveBy(x: 0, y: 1.5,  duration: 0.8)
-                ])))
-            }
-            _ = blocker
-        }
-
-        if let blocker = cell.blocker, blocker.type == .colorLock {
-            let lockRing = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
-                                       cornerRadius: tileSize * 0.22)
-            lockRing.fillColor = UIColor(hex: "#F8FAFC").withAlphaComponent(0.14)
-            lockRing.strokeColor = UIColor(hex: blocker.requiredColor ?? cell.color).withAlphaComponent(0.95)
-            lockRing.lineWidth = 3
-            lockRing.glowWidth = 3
-            lockRing.zPosition = 4
-            container.addChild(lockRing)
-
-            let colorKey = blocker.requiredColor ?? cell.color
-            let required = SKSpriteNode(texture: Theme.emojiTexture(forColor: colorKey))
-            required.size = CGSize(width: tileSize * 0.30, height: tileSize * 0.30)
-            required.position = CGPoint(x: tileSize * 0.24, y: tileSize * 0.24)
-            required.zPosition = 5
-            container.addChild(required)
-
-            let badge = SKShapeNode(circleOfRadius: tileSize * 0.15)
-            badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.72)
-            badge.strokeColor = .white.withAlphaComponent(0.85)
-            badge.lineWidth = 1
-            badge.position = CGPoint(x: -tileSize * 0.25, y: -tileSize * 0.25)
-            badge.zPosition = 5
-            container.addChild(badge)
-
-            let miniLock = Icons.sprite("lock.open",
-                                        size: tileSize * 0.16,
-                                        weight: .heavy,
-                                        tint: .white)
-            miniLock.position = badge.position
-            miniLock.zPosition = 6
-            container.addChild(miniLock)
-        }
-
-        if let blocker = cell.blocker, blocker.type == .chest {
-            let chest = SKShapeNode(rectOf: CGSize(width: tileSize - 4, height: tileSize - 4),
-                                    cornerRadius: tileSize * 0.18)
-            chest.fillColor = UIColor(hex: "#92400E").withAlphaComponent(0.76)
-            chest.strokeColor = UIColor(hex: "#FACC15").withAlphaComponent(0.95)
-            chest.lineWidth = 2
-            chest.glowWidth = 2
-            chest.zPosition = 4
-            container.addChild(chest)
-
-            let lid = SKShapeNode(rectOf: CGSize(width: tileSize * 0.70, height: tileSize * 0.18),
-                                  cornerRadius: tileSize * 0.07)
-            lid.fillColor = UIColor(hex: "#F59E0B").withAlphaComponent(0.96)
-            lid.strokeColor = .clear
-            lid.position = CGPoint(x: 0, y: tileSize * 0.12)
-            lid.zPosition = 5
-            container.addChild(lid)
-
-            let lock = Icons.sprite("lock.fill",
-                                    size: tileSize * 0.20,
-                                    weight: .heavy,
-                                    tint: UIColor(hex: "#FEF3C7"))
-            lock.zPosition = 6
-            container.addChild(lock)
-        }
-
-        if let blocker = cell.blocker, blocker.type == .vine {
-            let ring = SKShapeNode(rectOf: CGSize(width: tileSize - 5, height: tileSize - 5),
-                                   cornerRadius: tileSize * 0.20)
-            ring.fillColor = UIColor(hex: "#064E3B").withAlphaComponent(0.22)
-            ring.strokeColor = UIColor(hex: "#22C55E").withAlphaComponent(0.92)
-            ring.lineWidth = 2
-            ring.glowWidth = 2
-            ring.zPosition = 4
-            container.addChild(ring)
-
-            for angle in [CGFloat.pi / 5, -CGFloat.pi / 5] {
-                let rope = SKShapeNode(rectOf: CGSize(width: tileSize * 0.82, height: tileSize * 0.08),
-                                       cornerRadius: tileSize * 0.04)
-                rope.fillColor = UIColor(hex: "#16A34A").withAlphaComponent(0.90)
-                rope.strokeColor = UIColor(hex: "#BBF7D0").withAlphaComponent(0.70)
-                rope.lineWidth = 1
-                rope.zRotation = angle
-                rope.zPosition = 5
-                container.addChild(rope)
-            }
-        }
-
-        if let blocker = cell.blocker, blocker.hits > 1, blocker.type != .crate {
-            addHitBadge(to: container, hits: blocker.hits)
-        }
-
-        // Bomb overlay — pulsing red glow + drawn bomb (black sphere + fuse spark)
-        if cell.special == .bomb {
-            let glow = SKShapeNode(circleOfRadius: tileSize * 0.42)
-            glow.fillColor = UIColor(hex: "#EF4444").withAlphaComponent(0.4)
-            glow.strokeColor = .clear
-            glow.glowWidth = 6
-            glow.blendMode = .add
-            glow.zPosition = 1
-            container.addChild(glow)
-            glow.run(.repeatForever(.sequence([
-                .scale(to: 1.18, duration: 0.5),
-                .scale(to: 1.0, duration: 0.5)
-            ])))
-
-            let bombGroup = SKNode()
-            bombGroup.zPosition = 2
-            bombGroup.position = CGPoint(x: 0, y: 0)
-            container.addChild(bombGroup)
-
-            // Bomb body — black sphere with subtle highlight
-            let bodyR = tileSize * 0.30
-            let body = SKShapeNode(circleOfRadius: bodyR)
-            body.fillColor = UIColor(hex: "#0F172A")
-            body.strokeColor = UIColor(white: 1, alpha: 0.15)
-            body.lineWidth = 1
-            bombGroup.addChild(body)
-            let bodyHi = SKShapeNode(circleOfRadius: bodyR * 0.32)
-            bodyHi.fillColor = UIColor.white.withAlphaComponent(0.4)
-            bodyHi.strokeColor = .clear
-            bodyHi.position = CGPoint(x: -bodyR * 0.35, y: bodyR * 0.40)
-            bombGroup.addChild(bodyHi)
-
-            // Fuse — short curved line (rotated rectangle)
-            let fuse = SKShapeNode(rectOf: CGSize(width: tileSize * 0.05, height: tileSize * 0.18),
-                                   cornerRadius: tileSize * 0.025)
-            fuse.fillColor = UIColor(hex: "#92400E")
-            fuse.strokeColor = .clear
-            fuse.position = CGPoint(x: bodyR * 0.55, y: bodyR * 0.92)
-            fuse.zRotation = -0.4
-            bombGroup.addChild(fuse)
-
-            // Fuse spark (yellow dot, twinkles)
-            let spark = SKShapeNode(circleOfRadius: tileSize * 0.05)
-            spark.fillColor = UIColor(hex: "#FBBF24")
-            spark.strokeColor = UIColor.white.withAlphaComponent(0.9)
-            spark.lineWidth = 1
-            spark.glowWidth = 4
-            spark.position = CGPoint(x: bodyR * 0.95, y: bodyR * 1.30)
-            bombGroup.addChild(spark)
-            spark.run(.repeatForever(.sequence([
-                .scale(to: 1.3, duration: 0.18),
-                .scale(to: 0.85, duration: 0.18)
-            ])))
-
-            bombGroup.run(.repeatForever(.sequence([
-                .moveBy(x: 0, y: 2, duration: 0.5),
-                .moveBy(x: 0, y: -2, duration: 0.5)
-            ])))
-        }
-
-        if cell.special == .stripedRow || cell.special == .stripedCol {
-            let stripeLayer = SKNode()
-            stripeLayer.zPosition = 2
-            container.addChild(stripeLayer)
-
-            let stripeCount = 3
-            for i in 0..<stripeCount {
-                let offset = CGFloat(i - 1) * tileSize * 0.22
-                let stripe: SKShapeNode
-                if cell.special == .stripedRow {
-                    stripe = SKShapeNode(rectOf: CGSize(width: tileSize * 0.78, height: tileSize * 0.09),
-                                         cornerRadius: tileSize * 0.04)
-                    stripe.position = CGPoint(x: 0, y: offset)
-                } else {
-                    stripe = SKShapeNode(rectOf: CGSize(width: tileSize * 0.09, height: tileSize * 0.78),
-                                         cornerRadius: tileSize * 0.04)
-                    stripe.position = CGPoint(x: offset, y: 0)
-                }
-                stripe.fillColor = UIColor.white.withAlphaComponent(0.72)
-                stripe.strokeColor = UIColor(hex: cell.color).withAlphaComponent(0.8)
-                stripe.lineWidth = 1
-                stripeLayer.addChild(stripe)
-            }
-
-            let glow = SKShapeNode(rectOf: CGSize(width: tileSize * 0.9, height: tileSize * 0.9),
-                                   cornerRadius: tileSize * 0.22)
-            glow.fillColor = UIColor.clear
-            glow.strokeColor = UIColor.white.withAlphaComponent(0.55)
-            glow.lineWidth = 2
-            glow.glowWidth = 4
-            glow.zPosition = 1
-            container.addChild(glow)
-        }
-
-        if cell.special == .wrapped {
-            let wrap = SKNode()
-            wrap.zPosition = 2
-            container.addChild(wrap)
-
-            let bandColor = UIColor(hex: "#FDE68A")
-            for angle in [CGFloat.pi / 4, -CGFloat.pi / 4] {
-                let band = SKShapeNode(rectOf: CGSize(width: tileSize * 0.92, height: tileSize * 0.12),
-                                       cornerRadius: tileSize * 0.05)
-                band.fillColor = bandColor.withAlphaComponent(0.9)
-                band.strokeColor = UIColor(hex: "#F59E0B")
-                band.lineWidth = 1
-                band.zRotation = angle
-                wrap.addChild(band)
-            }
-
-            let knot = SKShapeNode(circleOfRadius: tileSize * 0.13)
-            knot.fillColor = UIColor(hex: "#F97316")
-            knot.strokeColor = .white
-            knot.lineWidth = 1.5
-            knot.glowWidth = 3
-            wrap.addChild(knot)
-        }
-
-        if cell.special == .colorBomb {
-            let orb = SKShapeNode(circleOfRadius: tileSize * 0.34)
-            orb.fillColor = UIColor(hex: "#111827")
-            orb.strokeColor = UIColor.white.withAlphaComponent(0.45)
-            orb.lineWidth = 1.5
-            orb.glowWidth = 5
-            orb.zPosition = 2
-            container.addChild(orb)
-
-            let sprinkleColors = ["#F472B6", "#60A5FA", "#FACC15", "#34D399", "#FB923C", "#FFFFFF"]
-            for i in 0..<10 {
-                let angle = CGFloat(i) * (.pi * 2 / 10)
-                let radius = tileSize * (i.isMultiple(of: 2) ? 0.17 : 0.25)
-                let dot = SKShapeNode(circleOfRadius: tileSize * 0.035)
-                dot.fillColor = UIColor(hex: sprinkleColors[i % sprinkleColors.count])
-                dot.strokeColor = .clear
-                dot.position = CGPoint(x: cos(angle) * radius, y: sin(angle) * radius)
-                dot.zPosition = 3
-                container.addChild(dot)
-            }
-        }
-
-        if cell.special == .fish {
-            let body = SKShapeNode(ellipseOf: CGSize(width: tileSize * 0.6, height: tileSize * 0.4))
-            body.fillColor = UIColor(hex: "#22D3EE").withAlphaComponent(0.92)
-            body.strokeColor = .white
-            body.lineWidth = 2
-            body.zPosition = 4
-            container.addChild(body)
-
-            let tailPath = UIBezierPath()
-            tailPath.move(to: CGPoint(x: tileSize * 0.26, y: 0))
-            tailPath.addLine(to: CGPoint(x: tileSize * 0.44, y: tileSize * 0.16))
-            tailPath.addLine(to: CGPoint(x: tileSize * 0.44, y: -tileSize * 0.16))
-            tailPath.close()
-            let tail = SKShapeNode(path: tailPath.cgPath)
-            tail.fillColor = UIColor(hex: "#22D3EE").withAlphaComponent(0.92)
-            tail.strokeColor = .white
-            tail.lineWidth = 1.5
-            tail.zPosition = 4
-            container.addChild(tail)
-
-            let eye = SKShapeNode(circleOfRadius: tileSize * 0.05)
-            eye.fillColor = .white
-            eye.strokeColor = UIColor(hex: "#0F172A")
-            eye.lineWidth = 1
-            eye.position = CGPoint(x: -tileSize * 0.14, y: tileSize * 0.06)
-            eye.zPosition = 5
-            container.addChild(eye)
-        }
-
-        if let blocker = cell.blocker, blocker.type == .countdown {
-            let scrim = SKShapeNode(rectOf: CGSize(width: tileSize - 2, height: tileSize - 2),
-                                    cornerRadius: tileSize * 0.22)
-            scrim.fillColor = UIColor(hex: "#7F1D1D").withAlphaComponent(0.16)
-            scrim.strokeColor = UIColor(hex: "#EF4444").withAlphaComponent(0.95)
-            scrim.lineWidth = 2
-            scrim.glowWidth = 1.5
-            scrim.zPosition = 4
-            container.addChild(scrim)
-
-            let badge = SKShapeNode(circleOfRadius: tileSize * 0.22)
-            badge.fillColor = UIColor(hex: "#0F172A").withAlphaComponent(0.82)
-            badge.strokeColor = UIColor(hex: "#EF4444")
-            badge.lineWidth = 1.5
-            badge.zPosition = 5
-            container.addChild(badge)
-
-            let num = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-            num.text = "\(blocker.countdown ?? 0)"
-            num.fontSize = max(11, tileSize * 0.30)
-            num.fontColor = .white
-            num.verticalAlignmentMode = .center
-            num.horizontalAlignmentMode = .center
-            num.zPosition = 6
-            container.addChild(num)
-        }
-
-        container.isAccessibilityElement = true
-        container.accessibilityLabel = tileAccessibilityLabel(for: cell)
-        container.accessibilityTraits = .button
-
-        container.userData = NSMutableDictionary(dictionary: ["color": cell.color])
-        return container
+        BoardRenderer.makeTile(cell: cell, size: tileSize, accessibilityLabel: tileAccessibilityLabel(for: cell))
     }
 
     /// VoiceOver description for a board tile: fruit, then any special and any
@@ -2530,6 +1953,9 @@ final class GameScene: SKScene {
             case .colorBomb:   parts.append(String(localized: "color bomb"))
             case .bomb:        parts.append(String(localized: "bomb"))
             case .fish:        parts.append(String(localized: "fish"))
+            case .lineBlast:   parts.append(String(localized: "line blast"))
+            case .rocket:      parts.append(String(localized: "rocket"))
+            case .ufo:         parts.append(String(localized: "UFO"))
             }
         }
         if cell.kind == .ingredient { parts.append(String(localized: "basket")) }
@@ -2546,6 +1972,7 @@ final class GameScene: SKScene {
             case .chocolate: parts.append(String(localized: "chocolate"))
             case .syrup:     parts.append(String(localized: "syrup"))
             case .countdown: parts.append(String(localized: "fuse \(blocker.countdown ?? 0)"))
+            default: parts.append(NSLocalizedString(blocker.type.rawValue, comment: "Blocker"))
             }
         }
         return parts.joined(separator: ", ")
@@ -2662,19 +2089,19 @@ final class GameScene: SKScene {
         let text: String
         let color: UIColor
         switch type {
-        case .ice:
+        case .ice, .magicFrost:
             text = "CRACK"
             color = UIColor(hex: "#7DD3FC")
             Audio.shared.play(.match)
-        case .lock:
+        case .lock, .cage:
             text = "OPEN"
             color = UIColor(hex: "#FACC15")
             Audio.shared.play(.tap)
-        case .jelly:
+        case .jelly, .bubble:
             text = "SPLASH"
             color = UIColor(hex: "#F9A8D4")
             Audio.shared.play(.jelly)
-        case .crate:
+        case .crate, .stone, .solidX, .licorice:
             text = "CRUNCH"
             color = UIColor(hex: "#F59E0B")
             Audio.shared.play(.crate)
@@ -2690,11 +2117,11 @@ final class GameScene: SKScene {
             text = "CUT"
             color = UIColor(hex: "#22C55E")
             Audio.shared.play(.match)
-        case .chocolate:
+        case .chocolate, .cream, .donut:
             text = "CRUMBLE"
             color = UIColor(hex: "#A75B22")
             Audio.shared.play(.crate)
-        case .syrup:
+        case .syrup, .honey:
             text = "SPLAT"
             color = UIColor(hex: "#EC4899")
             Audio.shared.play(.jelly)

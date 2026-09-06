@@ -340,6 +340,7 @@ extension LevelMapScene {
                              swapsAdded: 6)
             return
         case "lives3":
+            guard Persistence.lives < Economy.livesMax else { return }
             guard Persistence.cash >= Economy.livesBundleCost else { Effects.notify(.warning); return }
             Persistence.cash -= Economy.livesBundleCost
             Persistence.lives = min(Economy.livesMax, Persistence.lives + 3)

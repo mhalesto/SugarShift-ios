@@ -2,6 +2,24 @@ import SpriteKit
 
 // Level end
 extension GameScene {
+    func confirmReturnToMap() {
+        guard canAcceptBoardInput else { return }
+        let leave: () -> Void = { [weak self] in
+            guard let self else { return }
+            if self.movesLeft < self.movesAtStart && self.towerRun == nil {
+                self.pendingLifeLoss = true
+                self.settlePendingLifeLoss()
+                CampaignProgress.recordAttempt(level: self.levelNumber, score: self.score)
+            }
+            self.levelEnded = true
+            self.onChooseLevel?()
+        }
+        if movesLeft < movesAtStart {
+            showModal(title: String(localized: "Leave this level?"),
+                      message: String(localized: "Your progress in this attempt will be lost and one life will be used."),
+                      primary: String(localized: "Map"), primaryAction: leave)
+        } else { leave() }
+    }
     // MARK: - Level end
 
     func checkLevelEnd() {
@@ -18,7 +36,7 @@ extension GameScene {
     }
 
     var isLevelGoalComplete: Bool {
-        isPrimaryGoalComplete && isBossShieldBroken
+        objectiveTracker.isComplete && isBossShieldBroken
     }
 
     var isPrimaryGoalComplete: Bool {
@@ -250,6 +268,7 @@ extension GameScene {
     }
 
     func endLevel(won: Bool, moveBonus: EndLevelCard.MoveBonus? = nil) {
+        gamePhase = won ? .levelWon : .levelFailed
         levelEnded = true
         isResolving = true
         clearGhostPreview()
@@ -261,6 +280,11 @@ extension GameScene {
         if towerRun != nil {
             endTowerFloor(won: won)
             return
+        }
+
+        if (1...Levels.count).contains(levelNumber), !isDailyChallengeRun {
+            if won { CampaignProgress.recordCompletion(level: levelNumber, score: score) }
+            else { CampaignProgress.recordAttempt(level: levelNumber, score: score) }
         }
 
         let starMovesLeft = moveBonus?.moves ?? max(0, movesLeft)
@@ -556,7 +580,7 @@ extension GameScene {
     func settlePendingLifeLoss() {
         guard pendingLifeLoss else { return }
         pendingLifeLoss = false
-        lives = max(0, lives - 1)
+        lives = max(0, Persistence.lives - 1)
     }
 
     func claimCompletionRewardsIfNeeded(stars: Int) -> CompletionRewardResult {

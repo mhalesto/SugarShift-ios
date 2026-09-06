@@ -361,9 +361,10 @@ extension GameScene {
                              hammersAdded: 6,
                              swapsAdded: 6)
         case "lives3":
+            guard Persistence.lives < livesMax else { return }
             guard cash >= Economy.livesBundleCost else { insufficientCashFeedback(); return }
             cash -= Economy.livesBundleCost
-            lives = min(livesMax, lives + 3)
+            lives = min(livesMax, Persistence.lives + 3)
             Analytics.track("coin_spend", properties: ["item": id, "coins": "\(Economy.livesBundleCost)"])
             Effects.notify(.success)
         case "shuffles5":
@@ -632,6 +633,9 @@ extension GameScene {
 
     func showLevelTesterOverlay() {
         #if DEBUG
+        guard canAcceptBoardInput else { return }
+        cancelBoosterMode()
+        deselect()
         levelTesterOverlay?.removeFromParent()
 
         let stats = Analytics.levelStats(for: levelNumber)
@@ -659,7 +663,7 @@ extension GameScene {
         overlay.addChild(scrim)
 
         let cardW = min(size.width - 36, 340)
-        let cardH: CGFloat = 340
+        let cardH: CGFloat = 440
         let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 20)
         card.fillColor = UIColor(white: 1, alpha: 0.98)
         card.strokeColor = UIColor(hex: "#CBD5E1")
@@ -732,6 +736,15 @@ extension GameScene {
                  color: snapshot.warnings.isEmpty ? UIColor(hex: "#10B981") : UIColor(hex: "#B45309"),
                  align: .center)
 
+        let jump = testerButton(title: "Jump to level…", name: "testerJump",
+                                fill: UIColor(hex: "#FCE7F3"), textColor: UIColor(hex: "#9D174D"), width: 260)
+        jump.position = CGPoint(x: 0, y: -cardH / 2 + 178)
+        card.addChild(jump)
+        let world = testerButton(title: "Choose world…", name: "testerWorld",
+                                 fill: UIColor(hex: "#E0F2FE"), textColor: UIColor(hex: "#075985"), width: 260)
+        world.position = CGPoint(x: 0, y: -cardH / 2 + 138)
+        card.addChild(world)
+
         let replay = testerButton(title: String(localized: "Replay seed…"), name: "testerReplaySeed",
                                   fill: UIColor(hex: "#FEF3C7"),
                                   textColor: UIColor(hex: "#92400E"),
@@ -803,6 +816,12 @@ extension GameScene {
             case "testerReplaySeed":
                 promptForReplaySeed()
                 return
+            case "testerJump":
+                promptForTesterLevel()
+                return
+            case "testerWorld":
+                promptForTesterWorld()
+                return
             case "testerClose":
                 overlay.run(.sequence([.fadeOut(withDuration: 0.12), .removeFromParent()]))
                 levelTesterOverlay = nil
@@ -842,6 +861,8 @@ extension GameScene {
 
     func jumpToTesterLevel(_ level: Int) {
         #if DEBUG
+        guard (1...Levels.count).contains(level), !isResolving,
+              gamePhase.acceptsBoardInput else { return }
         levelTesterOverlay?.removeFromParent()
         levelTesterOverlay = nil
         endLevelCard?.dismiss()
@@ -852,15 +873,63 @@ extension GameScene {
         pendingLifeLoss = false
         continueUsedThisAttempt = false
         pendingDoubleRewards = []
+        initialDailyChallenge = nil
+        dailyChallengeRun = nil
+        isDailyChallengeRun = false
+        cancelIdleHint()
+        cancelBoosterMode()
         deselect()
         levelConfig = Levels.config(for: level)
         rebuildChapterBackdrop()
         rebuildHUD()
         layoutBoard()
         startNewGame()
-        showLevelTesterOverlay()
         #endif
     }
+
+    func promptForTesterLevel() {
+        #if DEBUG
+        guard levelTesterOverlay != nil, let controller = testerPresentingController else { return }
+        let alert = UIAlertController(title: "Jump to level", message: "Choose 1–\(Levels.count). Jumping does not charge a life or unlock skipped levels. Completing a level still saves normal progress.", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.keyboardType = .numberPad
+            field.placeholder = "1–\(Levels.count)"
+            field.text = "\(self.levelNumber)"
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Play", style: .default) { [weak self, weak alert] _ in
+            guard let self, let text = alert?.textFields?.first?.text,
+                  let level = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  (1...Levels.count).contains(level) else { return }
+            self.jumpToTesterLevel(level)
+        })
+        controller.present(alert, animated: true)
+        #endif
+    }
+
+    func promptForTesterWorld() {
+        #if DEBUG
+        guard levelTesterOverlay != nil, let controller = testerPresentingController else { return }
+        let sheet = UIAlertController(title: "Test a world", message: "Jump to its first campaign level. Unfinished worlds currently reuse Candy Valley artwork.", preferredStyle: .actionSheet)
+        for theme in WorldThemes.all {
+            sheet.addAction(UIAlertAction(title: "\(theme.displayName) · \(theme.levels.lowerBound)–\(theme.levels.upperBound)", style: .default) { [weak self] _ in
+                self?.jumpToTesterLevel(theme.levels.lowerBound)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = controller.view
+        sheet.popoverPresentationController?.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
+        controller.present(sheet, animated: true)
+        #endif
+    }
+
+    #if DEBUG
+    private var testerPresentingController: UIViewController? {
+        var controller = view?.window?.rootViewController
+        while let presented = controller?.presentedViewController { controller = presented }
+        return controller
+    }
+    #endif
 
     func spawnConfetti() {
         let now = CACurrentMediaTime()
@@ -873,6 +942,7 @@ extension GameScene {
     }
 
     func applyCollapseAndRefill() {
+        gamePhase = .falling
         let oldGrid = grid
         let idToNode = nodeIdMap(in: oldGrid)
         var idToOldPosition: [String: Pos] = [:]
@@ -883,15 +953,13 @@ extension GameScene {
                 }
             }
         }
-        let settledGrid = Engine.collapseAndRefill(grid,
+        var newGrid = Engine.collapseAndRefill(grid,
                                                    colors: palette,
                                                    mask: levelConfig.layout.mask,
                                                    cascadeBoost: currentCascadeBoost,
+                                                   portals: levelConfig.layout.portalPairs,
+                                                   spawnWeights: levelConfig.spawnWeights,
                                                    rng: &gameplayRNG)
-        var newGrid = Engine.applyPortals(settledGrid,
-                                          pairs: levelConfig.layout.portalPairs)
-        newGrid = Engine.applyConveyors(newGrid,
-                                        belts: levelConfig.layout.conveyorBelts)
         var collectedDropNodeIDs = Set<String>()
 
         // Ingredient rescue: any baskets that have settled to the bottom of
@@ -964,6 +1032,11 @@ extension GameScene {
                 .removeFromParent()
             ]))
         }
+        if !collectedPositions.isEmpty || !collectedKeyPositions.isEmpty {
+            newGrid = Engine.collapseAndRefill(newGrid, colors: palette,
+                mask: levelConfig.layout.mask, portals: levelConfig.layout.portalPairs,
+                spawnWeights: levelConfig.spawnWeights, rng: &gameplayRNG)
+        }
         grid = newGrid
         if !levelConfig.layout.portalPairs.isEmpty || !levelConfig.layout.conveyorBelts.isEmpty {
             Analytics.track("board_mechanic_tick",
@@ -1008,7 +1081,14 @@ extension GameScene {
                 guard let cell = newGrid[r][c] else { continue }
                 let columnDelay = Persistence.reduceMotion ? 0 : TimeInterval(c) * 0.012
                 let destination = point(forRow: r, col: c)
-                if let existing = idToNode[cell.id] {
+                if !cell.hasPiece {
+                    nodes[r][c]?.removeFromParent()
+                    let fixedNode = makeTileNode(for: cell)
+                    fixedNode.position = destination
+                    worldNode.addChild(fixedNode)
+                    newNodes[r][c] = fixedNode
+                } else if let existing = idToNode[cell.id],
+                          idToOldPosition[cell.id].flatMap({ oldGrid[$0.r][$0.c]?.tile }) == cell.tile {
                     newNodes[r][c] = existing
                     let old = idToOldPosition[cell.id] ?? Pos(r: 0, c: c)
                     let distance = abs(r - old.r) + abs(c - old.c)
@@ -1025,6 +1105,7 @@ extension GameScene {
                         }
                     }
                 } else {
+                    idToNode[cell.id]?.removeFromParent()
                     let node = makeTileNode(for: cell)
                     let spawnY = size.height / 2 + tileSize * (1.2 + CGFloat(c % 3) * 0.12)
                     node.position = CGPoint(x: destination.x, y: spawnY)

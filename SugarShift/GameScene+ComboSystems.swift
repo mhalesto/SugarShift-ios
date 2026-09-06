@@ -137,7 +137,7 @@ struct ClearPresentationPlan: Equatable {
                     return 0.10 + TimeInterval(nearest) * 0.026
                 }
                 return 0.10 + radial
-            case .colorColor:
+            case .colorColor, .advanced:
                 return radial
             case .bombBomb, .wrappedWrapped, .bombWrapped:
                 return radial
@@ -514,6 +514,7 @@ extension GameScene {
         guard levelConfig.isBoss, bossShieldRemaining > 0, amount > 0 else { return }
         let old = bossShieldRemaining
         bossShieldRemaining = max(0, bossShieldRemaining - amount)
+        objectiveTracker.consume(.bossShieldDamaged(count: old - bossShieldRemaining))
         guard bossShieldRemaining != old else { return }
         updateHUD()
         updateComboMeter()
@@ -754,16 +755,8 @@ extension GameScene {
             switch kind {
             case .stripeStripe:
                 Audio.shared.play(.stripe, pan: pan)
-                if plan.firstSpecial == .stripedRow, plan.secondSpecial == .stripedRow {
-                    threeRows(around: plan.origin.r)
-                } else if plan.firstSpecial == .stripedCol, plan.secondSpecial == .stripedCol {
-                    threeColumns(around: plan.origin.c)
-                } else {
-                    if plan.firstSpecial == .stripedRow { rowSweep(firstPosition.r) }
-                    else { columnSweep(firstPosition.c) }
-                    if plan.secondSpecial == .stripedRow { rowSweep(secondPosition.r, delay: 0.035) }
-                    else { columnSweep(secondPosition.c, delay: 0.035) }
-                }
+                rowSweep(plan.origin.r)
+                columnSweep(plan.origin.c)
             case .wrappedStripe:
                 Audio.shared.play(.wrapped, pan: pan)
                 Audio.shared.play(.stripe, pan: pan)
@@ -810,7 +803,7 @@ extension GameScene {
                            delay: 0.09 + TimeInterval(index) * 0.022,
                            scale: 0.88)
                 }
-            case .colorColor:
+            case .colorColor, .advanced:
                 Audio.shared.play(.colorCharge, pan: pan)
                 Audio.shared.play(.smash, pan: pan)
                 radial(at: plan.origin)
@@ -947,7 +940,7 @@ extension GameScene {
                         self.worldNode.addChild(second)
                     }
                 ]))
-            case .bomb:
+            case .bomb, .lineBlast, .rocket, .ufo:
                 run(.sequence([
                     .wait(forDuration: delay),
                     .run { [weak self] in
@@ -975,7 +968,7 @@ extension GameScene {
             case .stripedRow, .stripedCol: Audio.shared.play(.stripe, pan: soundPan(at: origin))
             case .wrapped: Audio.shared.play(.wrapped, pan: soundPan(at: origin))
             case .colorBomb: Audio.shared.play(.colorCharge, pan: soundPan(at: origin))
-            case .bomb: Audio.shared.play(.bomb, pan: soundPan(at: origin))
+            case .bomb, .lineBlast, .rocket, .ufo: Audio.shared.play(.bomb, pan: soundPan(at: origin))
             case .fish: Audio.shared.play(.fish, pan: soundPan(at: origin))
             }
         }
@@ -983,6 +976,7 @@ extension GameScene {
 
     func specialComboPresentation(for kind: SpecialComboKind) -> (String, UIColor) {
         switch kind {
+        case .advanced: return (worldTheme.comboTitle, worldTheme.glowColor)
         case .colorColor: return (String(localized: "BOARD CLEAR!"), UIColor(hex: "#F472B6"))
         case .stripeStripe: return (String(localized: "DOUBLE STRIPE!"), UIColor(hex: "#60A5FA"))
         case .wrappedStripe: return (String(localized: "WRAPPED STRIPE!"), UIColor(hex: "#F97316"))

@@ -898,18 +898,36 @@ enum Effects {
     // MARK: - Screen shake
 
     static func shake(_ node: SKNode, intensity: CGFloat = 8, duration: TimeInterval = 0.25) {
-        guard !Persistence.reduceMotion else { return }
-        let originalPos = node.position
+        // An overlapping blast must not capture the previous shake's displaced
+        // position as its new origin. Keep one cancellable shake per board.
+        let originalPos = (node.userData?["ss.shakeOrigin"] as? NSValue)?.cgPointValue ?? node.position
+        cancelShake(node)
+        guard !Persistence.reduceMotion, !UIAccessibility.isReduceMotionEnabled else { return }
+        if node.userData == nil { node.userData = NSMutableDictionary() }
+        node.userData?["ss.shakeOrigin"] = NSValue(cgPoint: originalPos)
         var actions: [SKAction] = []
         let steps = 6
-        for _ in 0..<steps {
-            let dx = CGFloat.random(in: -intensity...intensity)
-            let dy = CGFloat.random(in: -intensity...intensity)
+        for step in 0..<steps {
+            let strength = max(0, intensity) * CGFloat(steps - step) / CGFloat(steps)
+            let dx = CGFloat.random(in: -strength...strength)
+            let dy = CGFloat.random(in: -strength...strength)
             actions.append(.move(to: CGPoint(x: originalPos.x + dx, y: originalPos.y + dy),
                                   duration: duration / TimeInterval(steps * 2)))
             actions.append(.move(to: originalPos, duration: duration / TimeInterval(steps * 2)))
         }
-        node.run(.sequence(actions))
+        actions.append(.run { [weak node] in
+            node?.position = originalPos
+            node?.userData?.removeObject(forKey: "ss.shakeOrigin")
+        })
+        node.run(.sequence(actions), withKey: "ss.boardShake")
+    }
+
+    static func cancelShake(_ node: SKNode) {
+        node.removeAction(forKey: "ss.boardShake")
+        if let original = (node.userData?["ss.shakeOrigin"] as? NSValue)?.cgPointValue {
+            node.position = original
+        }
+        node.userData?.removeObject(forKey: "ss.shakeOrigin")
     }
 
     // MARK: - Haptics

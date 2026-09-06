@@ -15,7 +15,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         #if DEBUG
         if let marketingScene = SugarShiftMarketingSceneKind.current {
             window.rootViewController = SugarShiftMarketingShowcaseViewController(kind: marketingScene)
-        } else if let debugLevel = UserDefaults.standard.object(forKey: "ss.dev.skipToLevel") as? Int {
+        } else if UserDefaults.standard.integer(forKey: "ss.dev.skipToLevel") > 0 {
+            let debugLevel = UserDefaults.standard.integer(forKey: "ss.dev.skipToLevel")
             let game = GameViewController()
             game.levelNumber = debugLevel
             window.rootViewController = game

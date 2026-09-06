@@ -1,6 +1,6 @@
 import Foundation
 
-enum Special: String, Hashable, CaseIterable {
+enum Special: String, Hashable, CaseIterable, Codable {
     case stripedRow = "striped-row"
     case stripedCol = "striped-col"
     case wrapped
@@ -9,6 +9,9 @@ enum Special: String, Hashable, CaseIterable {
     /// Seeker. Created by a 2x2 square match; on activation it targets a goal
     /// tile or blocker (handled by the scene) plus a small local splash.
     case fish
+    case lineBlast = "line-blast"
+    case rocket
+    case ufo
 }
 
 /// Canonical result of swapping two specials. The scene owns animation and
@@ -30,6 +33,9 @@ enum SpecialComboKind: String, Equatable, CaseIterable {
     case fishWrapped
     case fishBomb
     case fishFish
+    /// Deterministic pairing involving line-blast, rocket, or UFO. The staged
+    /// resolver reports the constituent activations without multiplying chains.
+    case advanced
 }
 
 private struct SpecialPair: Hashable {
@@ -45,54 +51,6 @@ private struct SpecialPair: Hashable {
             second = a.rawValue
         }
     }
-}
-
-enum CellKind: Hashable {
-    case normal
-    case ingredient
-    case key
-}
-
-enum BlockerType: Hashable {
-    case ice
-    case lock
-    case jelly
-    case crate
-    case colorLock
-    /// Opens when a nearby match hits it or when a collected key reaches the
-    /// bottom of the board. Rewards coins or stocked boosters.
-    case chest
-    /// Rope/vine tie. A direct match or hammer cuts it before the tile can play
-    /// normally, creating local pressure without needing another fruit asset.
-    case vine
-    /// Chocolate tile. Single-hit to clear. Spreads to one orthogonal neighbor
-    /// at the end of every player turn, *unless* the player damaged a
-    /// chocolate that turn (i.e., adjacent matching keeps it in check).
-    case chocolate
-    /// Sticky syrup coating. Single-hit to clear. Applied to tiles by the
-    /// rising syrup-line mechanic; the line climbs one row every N moves and
-    /// coats every playable tile on the new row. Pressure mechanic — push
-    /// the player to keep momentum instead of stalling.
-    case syrup
-    /// Ticking fuse. Counts down one each player turn; at zero it drains a move
-    /// and re-arms. Defused by a direct match like other single-hit blockers.
-    case countdown
-}
-
-struct Blocker {
-    var type: BlockerType
-    var hits: Int
-    var requiredColor: String? = nil
-    /// Turns left for a `.countdown` fuse before it detonates. Nil for others.
-    var countdown: Int? = nil
-}
-
-struct Cell {
-    let id: String
-    var color: String
-    var special: Special?
-    var kind: CellKind
-    var blocker: Blocker? = nil
 }
 
 struct Pos: Hashable {
@@ -136,7 +94,8 @@ struct ClassifiedSwap {
 enum Engine {
     /// Exhaustive unordered special-pair table. Adding a new special requires
     /// adding its pairings here; the matrix coverage test enforces that rule.
-    private static let specialComboRules: [SpecialPair: SpecialComboKind] = [
+    private static let specialComboRules: [SpecialPair: SpecialComboKind] = {
+        var rules: [SpecialPair: SpecialComboKind] = [
         SpecialPair(.stripedRow, .stripedRow): .stripeStripe,
         SpecialPair(.stripedRow, .stripedCol): .stripeStripe,
         SpecialPair(.stripedCol, .stripedCol): .stripeStripe,
@@ -158,7 +117,15 @@ enum Engine {
         SpecialPair(.bomb, .bomb): .bombBomb,
         SpecialPair(.bomb, .fish): .fishBomb,
         SpecialPair(.fish, .fish): .fishFish
-    ]
+        ]
+        for firstIndex in Special.allCases.indices {
+            for secondIndex in firstIndex..<Special.allCases.count {
+                let pair = SpecialPair(Special.allCases[firstIndex], Special.allCases[secondIndex])
+                if rules[pair] == nil { rules[pair] = .advanced }
+            }
+        }
+        return rules
+    }()
 
     static func specialComboKind(_ first: Special, _ second: Special) -> SpecialComboKind? {
         specialComboRules[SpecialPair(first, second)]
@@ -187,8 +154,31 @@ enum Engine {
                   grid[row][column]?.kind == .normal else { return }
             affected.insert(Pos(r: row, c: column))
         }
-        func addRow(_ row: Int) { for c in 0..<cols { add(row, c) } }
-        func addColumn(_ column: Int) { for r in 0..<rows { add(r, column) } }
+        func addRay(from origin: Pos, dr: Int, dc: Int) {
+            var r = origin.r + dr
+            var c = origin.c + dc
+            while r >= 0, r < rows, c >= 0, c < cols {
+                guard let cell = grid[r][c] else { break }
+                add(r, c)
+                if cell.blocker?.type.rules.blocksBlast == true { break }
+                r += dr
+                c += dc
+            }
+        }
+        func addRow(_ row: Int, from column: Int? = nil) {
+            guard row >= 0, row < rows else { return }
+            let origin = Pos(r: row, c: min(max(0, column ?? center.c), cols - 1))
+            add(origin.r, origin.c)
+            addRay(from: origin, dr: 0, dc: -1)
+            addRay(from: origin, dr: 0, dc: 1)
+        }
+        func addColumn(_ column: Int, from row: Int? = nil) {
+            guard column >= 0, column < cols else { return }
+            let origin = Pos(r: min(max(0, row ?? center.r), rows - 1), c: column)
+            add(origin.r, origin.c)
+            addRay(from: origin, dr: -1, dc: 0)
+            addRay(from: origin, dr: 1, dc: 0)
+        }
         func addThreeRows(around row: Int) {
             let count = min(3, rows)
             let start = min(max(0, row - 1), max(0, rows - count))
@@ -229,8 +219,8 @@ enum Engine {
         func addRankedFish(count: Int, radius: Int, lane: Special? = nil) {
             for target in rankedFishTargets.prefix(count) {
                 addSquare(target, radius: radius)
-                if lane == .stripedRow { addRow(target.r) }
-                if lane == .stripedCol { addColumn(target.c) }
+                if lane == .stripedRow { addRow(target.r, from: target.c) }
+                if lane == .stripedCol { addColumn(target.c, from: target.r) }
             }
         }
 
@@ -240,16 +230,10 @@ enum Engine {
         case .colorColor:
             for r in 0..<rows { for c in 0..<cols { add(r, c) } }
         case .stripeStripe:
-            let firstPosition = postSwapPosition(for: first, isFirst: true)
-            let secondPosition = postSwapPosition(for: second, isFirst: false)
-            if first == .stripedRow, second == .stripedRow {
-                addThreeRows(around: center.r)
-            } else if first == .stripedCol, second == .stripedCol {
-                addThreeColumns(around: center.c)
-            } else {
-                if first == .stripedRow { addRow(firstPosition.r) } else { addColumn(firstPosition.c) }
-                if second == .stripedRow { addRow(secondPosition.r) } else { addColumn(secondPosition.c) }
-            }
+            // Every striped pair is the genre-standard cross. Orientation only
+            // affects its animation; it must not inflate into three lanes.
+            addRow(center.r, from: center.c)
+            addColumn(center.c, from: center.r)
         case .wrappedStripe:
             addThreeRows(around: center.r)
             addThreeColumns(around: center.c)
@@ -263,10 +247,10 @@ enum Engine {
         case .colorStripe:
             let stripe = stripeAndPosition()?.0 ?? .stripedRow
             for p in colorPositions() {
-                stripe == .stripedRow ? addRow(p.r) : addColumn(p.c)
+                stripe == .stripedRow ? addRow(p.r, from: p.c) : addColumn(p.c, from: p.r)
             }
         case .colorWrapped:
-            for p in colorPositions() { addSquare(p, radius: wrappedRadius) }
+            for p in colorPositions() { addSquare(p, radius: bigger ? 2 : 1) }
         case .colorBomb:
             for p in colorPositions() { addSquare(p, radius: bombRadius) }
         case .colorFish:
@@ -288,6 +272,15 @@ enum Engine {
             addRankedFish(count: 5, radius: bombRadius)
         case .fishFish:
             addRankedFish(count: 4, radius: 1)
+        case .advanced:
+            let staged = resolveAdvancedComboBase(grid,
+                                                  first: first,
+                                                  second: second,
+                                                  positions: positions,
+                                                  targetColor: targetColor,
+                                                  rankedFishTargets: rankedFishTargets,
+                                                  bigger: bigger)
+            affected.formUnion(staged.positions)
         }
 
         affected.insert(positions.0)
@@ -295,7 +288,211 @@ enum Engine {
         return expandMatchesWithSpecials(grid,
                                          affected,
                                          bigger: bigger,
-                                         excludingSpecialsAt: [positions.0, positions.1])
+                                         excludingSpecialsAt: [positions.0, positions.1],
+                                         rankedTargets: rankedFishTargets)
+    }
+
+    /// Staged pure activation result for presentation and deterministic tests.
+    /// `positions` is authoritative gameplay output; stages only describe timing.
+    static func resolveSpecialActivationStaged(_ grid: Grid,
+                                               special: Special,
+                                               at origin: Pos,
+                                               targetColor: String? = nil,
+                                               rankedTargets: [Pos] = [],
+                                               bigger: Bool = false,
+                                               excludingSpecialsAt excluded: Set<Pos> = []) -> SpecialActivationResolution {
+        let stages = activationStagesBase(grid,
+                                          special: special,
+                                          at: origin,
+                                          targetColor: targetColor,
+                                          rankedTargets: rankedTargets,
+                                          bigger: bigger)
+        let base = stages.reduce(into: Set<Pos>([origin])) { $0.formUnion($1.positions) }
+        let chained = expandMatchesWithSpecials(grid,
+                                                base,
+                                                bigger: bigger,
+                                                excludingSpecialsAt: excluded.union([origin]),
+                                                rankedTargets: rankedTargets)
+        return SpecialActivationResolution(positions: chained, stages: stages)
+    }
+
+    static func resolveSpecialComboStaged(_ grid: Grid,
+                                          kind: SpecialComboKind,
+                                          first: Special,
+                                          second: Special,
+                                          positions: (Pos, Pos),
+                                          targetColor: String?,
+                                          rankedFishTargets: [Pos],
+                                          bigger: Bool) -> SpecialActivationResolution {
+        if kind == .advanced {
+            let base = resolveAdvancedComboBase(grid,
+                                                first: first,
+                                                second: second,
+                                                positions: positions,
+                                                targetColor: targetColor,
+                                                rankedFishTargets: rankedFishTargets,
+                                                bigger: bigger)
+            let chained = expandMatchesWithSpecials(
+                grid,
+                base.positions.union([positions.0, positions.1]),
+                bigger: bigger,
+                excludingSpecialsAt: [positions.0, positions.1],
+                rankedTargets: rankedFishTargets)
+            return SpecialActivationResolution(positions: chained, stages: base.stages)
+        }
+        let resolved = resolveSpecialCombo(grid,
+                                           kind: kind,
+                                           first: first,
+                                           second: second,
+                                           positions: positions,
+                                           targetColor: targetColor,
+                                           rankedFishTargets: rankedFishTargets,
+                                           bigger: bigger)
+        let stageCount = kind == .wrappedWrapped || kind == .colorWrapped ? 2 : 1
+        return SpecialActivationResolution(positions: resolved,
+            stages: (0..<stageCount).map { index in
+                SpecialActivationStage(index: index, origin: positions.1,
+                                       special: second, positions: resolved)
+            })
+    }
+
+    private static func resolveAdvancedComboBase(_ grid: Grid,
+                                                 first: Special,
+                                                 second: Special,
+                                                 positions: (Pos, Pos),
+                                                 targetColor: String?,
+                                                 rankedFishTargets: [Pos],
+                                                 bigger: Bool) -> SpecialActivationResolution {
+        var stages: [SpecialActivationStage] = []
+        let firstOrigin = positions.1
+        let secondOrigin = positions.0
+        if first == .colorBomb || second == .colorBomb {
+            let converted = first == .colorBomb ? second : first
+            let fallbackColor = first == .colorBomb
+                ? grid[secondOrigin.r][secondOrigin.c]?.color
+                : grid[firstOrigin.r][firstOrigin.c]?.color
+            let color = targetColor ?? fallbackColor
+            var index = 0
+            for r in 0..<grid.count {
+                for c in 0..<grid[r].count where grid[r][c]?.color == color {
+                    let origin = Pos(r: r, c: c)
+                    let conversion = activationStagesBase(grid,
+                                                          special: converted,
+                                                          at: origin,
+                                                          targetColor: color,
+                                                          rankedTargets: rankedFishTargets,
+                                                          bigger: bigger)
+                    for stage in conversion {
+                        stages.append(SpecialActivationStage(index: index,
+                                                             origin: stage.origin,
+                                                             special: stage.special,
+                                                             positions: stage.positions))
+                        index += 1
+                    }
+                }
+            }
+        } else {
+            let activations = [(first, firstOrigin), (second, secondOrigin)]
+            for (special, origin) in activations {
+                let next = activationStagesBase(grid,
+                                                special: special,
+                                                at: origin,
+                                                targetColor: targetColor,
+                                                rankedTargets: rankedFishTargets,
+                                                bigger: bigger)
+                for stage in next {
+                    stages.append(SpecialActivationStage(index: stages.count,
+                                                         origin: stage.origin,
+                                                         special: stage.special,
+                                                         positions: stage.positions))
+                }
+            }
+        }
+        let positions = stages.reduce(into: Set<Pos>()) { $0.formUnion($1.positions) }
+        return SpecialActivationResolution(positions: positions, stages: stages)
+    }
+
+    private static func activationStagesBase(_ grid: Grid,
+                                             special: Special,
+                                             at origin: Pos,
+                                             targetColor: String?,
+                                             rankedTargets: [Pos],
+                                             bigger: Bool) -> [SpecialActivationStage] {
+        guard isValid(origin, in: grid) else { return [] }
+        let radius = bigger ? 2 : 1
+        func stage(_ index: Int, _ positions: Set<Pos>, origin: Pos = origin) -> SpecialActivationStage {
+            SpecialActivationStage(index: index, origin: origin, special: special, positions: positions)
+        }
+        switch special {
+        case .stripedRow:
+            return [stage(0, linePositions(in: grid, origin: origin, dr: 0, dc: 1))]
+        case .stripedCol, .rocket:
+            return [stage(0, linePositions(in: grid, origin: origin, dr: 1, dc: 0))]
+        case .lineBlast:
+            let cross = linePositions(in: grid, origin: origin, dr: 0, dc: 1)
+                .union(linePositions(in: grid, origin: origin, dr: 1, dc: 0))
+            return [stage(0, cross)]
+        case .bomb:
+            return [stage(0, squarePositions(in: grid, center: origin, radius: radius))]
+        case .wrapped:
+            let footprint = squarePositions(in: grid, center: origin, radius: radius)
+            return [stage(0, footprint), stage(1, footprint)]
+        case .colorBomb:
+            let color = targetColor ?? grid[origin.r][origin.c]?.color
+            var positions: Set<Pos> = [origin]
+            for r in 0..<grid.count {
+                for c in 0..<grid[r].count where grid[r][c]?.color == color {
+                    positions.insert(Pos(r: r, c: c))
+                }
+            }
+            return [stage(0, positions)]
+        case .fish, .ufo:
+            let targets = rankedTargets.isEmpty ? [origin] : Array(rankedTargets.prefix(special == .ufo ? 3 : 1))
+            return targets.enumerated().map { index, target in
+                stage(index,
+                      squarePositions(in: grid,
+                                      center: target,
+                                      radius: special == .ufo ? radius : 0),
+                      origin: target)
+            }
+        }
+    }
+
+    private static func squarePositions(in grid: Grid, center: Pos, radius: Int) -> Set<Pos> {
+        var positions: Set<Pos> = []
+        for dr in -radius...radius {
+            for dc in -radius...radius {
+                let p = Pos(r: center.r + dr, c: center.c + dc)
+                if isPlayablePieceSlot(p, in: grid) { positions.insert(p) }
+            }
+        }
+        return positions
+    }
+
+    private static func linePositions(in grid: Grid,
+                                      origin: Pos,
+                                      dr: Int,
+                                      dc: Int) -> Set<Pos> {
+        var positions: Set<Pos> = []
+        if isPlayablePieceSlot(origin, in: grid) { positions.insert(origin) }
+        for sign in [-1, 1] {
+            var p = Pos(r: origin.r + dr * sign, c: origin.c + dc * sign)
+            while isValid(p, in: grid), let cell = grid[p.r][p.c] {
+                if cell.kind == .normal { positions.insert(p) }
+                if cell.blocker?.type.rules.blocksBlast == true { break }
+                p = Pos(r: p.r + dr * sign, c: p.c + dc * sign)
+            }
+        }
+        return positions
+    }
+
+    private static func isValid(_ position: Pos, in grid: Grid) -> Bool {
+        position.r >= 0 && position.r < grid.count
+            && position.c >= 0 && position.c < grid[position.r].count
+    }
+
+    private static func isPlayablePieceSlot(_ position: Pos, in grid: Grid) -> Bool {
+        isValid(position, in: grid) && grid[position.r][position.c]?.kind == .normal
     }
 
     private static func uid() -> String {
@@ -308,26 +505,27 @@ enum Engine {
         String(rng.next(), radix: 36)
     }
 
-    static func createInitialGrid(rows: Int, cols: Int, colors: [String], mask: [[Bool]]? = nil) -> Grid {
+    static func createInitialGrid(rows: Int, cols: Int, colors: [String], mask: [[Bool]]? = nil,
+                                  spawnWeights: [PieceColor: Double] = [:]) -> Grid {
         var rng = SystemRandomNumberGenerator()
-        return createInitialGrid(rows: rows, cols: cols, colors: colors, mask: mask, rng: &rng)
+        return createInitialGrid(rows: rows, cols: cols, colors: colors, mask: mask,
+                                 spawnWeights: spawnWeights, rng: &rng)
     }
 
     static func createInitialGrid<R: RandomNumberGenerator>(rows: Int,
                                                             cols: Int,
                                                             colors: [String],
                                                             mask: [[Bool]]? = nil,
+                                                            spawnWeights: [PieceColor: Double] = [:],
                                                             rng: inout R) -> Grid {
+        guard rows > 0, cols > 0, !colors.isEmpty else { return [] }
         var g: Grid = Array(repeating: Array(repeating: nil, count: cols), count: rows)
         for r in 0..<rows {
             for c in 0..<cols {
                 if let m = mask, !m[r][c] { continue }
-                var color: String = colors[0]
-                var tries = 0
-                repeat {
-                    color = colors.randomElement(using: &rng)!
-                    tries += 1
-                } while tries < 12 && wouldMakeInitialMatch(g, r: r, c: c, color: color)
+                let candidates = colors.filter { !wouldMakeInitialMatch(g, r: r, c: c, color: $0) }
+                let color = weightedColor(candidates.isEmpty ? colors : candidates,
+                                          weights: spawnWeights, rng: &rng)
                 g[r][c] = Cell(id: uid(rng: &rng), color: color, special: nil, kind: .normal)
             }
         }
@@ -344,18 +542,18 @@ enum Engine {
     /// Lets callers detect special creation patterns.
     static func findMatchGroups(_ grid: Grid) -> [[Pos]] {
         let rows = grid.count
-        let cols = grid[0].count
+        let cols = grid.first?.count ?? 0
         var groups: [[Pos]] = []
 
         // Horizontal runs
         for r in 0..<rows {
             var c = 0
             while c < cols {
-                guard let cell = grid[r][c], cell.kind == .normal else { c += 1; continue }
+                guard let cell = grid[r][c], cell.isMatchable else { c += 1; continue }
                 let color = cell.color
                 var k = c + 1
                 while k < cols,
-                      grid[r][k]?.kind == .normal,
+                      grid[r][k]?.isMatchable == true,
                       grid[r][k]?.color == color { k += 1 }
                 if k - c >= 3 {
                     var run: [Pos] = []
@@ -369,11 +567,11 @@ enum Engine {
         for c in 0..<cols {
             var r = 0
             while r < rows {
-                guard let cell = grid[r][c], cell.kind == .normal else { r += 1; continue }
+                guard let cell = grid[r][c], cell.isMatchable else { r += 1; continue }
                 let color = cell.color
                 var k = r + 1
                 while k < rows,
-                      grid[k][c]?.kind == .normal,
+                      grid[k][c]?.isMatchable == true,
                       grid[k][c]?.color == color { k += 1 }
                 if k - r >= 3 {
                     var run: [Pos] = []
@@ -427,8 +625,11 @@ enum Engine {
 
         if let wrapped = intersections.first,
            let position = spawnPosition(in: wrapped.combined, fallback: wrapped.position) {
+            let center = wrapped.position
+            let arms = [Pos(r: center.r - 1, c: center.c), Pos(r: center.r + 1, c: center.c),
+                        Pos(r: center.r, c: center.c - 1), Pos(r: center.r, c: center.c + 1)]
             return SpecialSpawn(position: position,
-                                special: .wrapped)
+                                special: arms.allSatisfy(wrapped.combined.contains) ? .lineBlast : .wrapped)
         }
 
         if let group = groups.filter({ $0.count >= 5 }).max(by: { $0.count < $1.count }),
@@ -451,8 +652,9 @@ enum Engine {
     static func expandMatchesWithSpecials(_ grid: Grid,
                                           _ matches: Set<Pos>,
                                           bigger: Bool = false,
-                                          excludingSpecialsAt excluded: Set<Pos>? = nil) -> Set<Pos> {
-        let rows = grid.count, cols = grid[0].count
+                                          excludingSpecialsAt excluded: Set<Pos>? = nil,
+                                          rankedTargets: [Pos] = []) -> Set<Pos> {
+        let rows = grid.count, cols = grid.first?.count ?? 0
         var out = Set(matches.filter { p in
             p.r >= 0 && p.r < rows && p.c >= 0 && p.c < cols
                 && grid[p.r][p.c]?.kind == .normal
@@ -471,36 +673,10 @@ enum Engine {
                   triggered.insert(p).inserted,
                   let cell = grid[p.r][p.c],
                   let sp = cell.special else { continue }
-            switch sp {
-            case .bomb:
-                let radius = bigger ? 2 : 1
-                for dr in -radius...radius {
-                    for dc in -radius...radius { add(p.r + dr, p.c + dc) }
-                }
-            case .stripedRow:
-                for c in 0..<cols { add(p.r, c) }
-            case .stripedCol:
-                for r in 0..<rows { add(r, p.c) }
-            case .wrapped:
-                // Wrapped now clears a wider blast than a bomb's 3x3 to feel
-                // like the genre's double-detonation.
-                let radius = bigger ? 3 : 2
-                for dr in -radius...radius {
-                    for dc in -radius...radius { add(p.r + dr, p.c + dc) }
-                }
-            case .colorBomb:
-                let target = cell.color
-                for r in 0..<rows {
-                    for c in 0..<cols {
-                        if grid[r][c]?.color == target { add(r, c) }
-                    }
-                }
-            case .fish:
-                // Local splash; the goal-seeking target is added by the scene,
-                // which knows the level objective.
-                add(p.r, p.c)
-                add(p.r - 1, p.c); add(p.r + 1, p.c)
-                add(p.r, p.c - 1); add(p.r, p.c + 1)
+            let stages = activationStagesBase(grid, special: sp, at: p,
+                                             targetColor: cell.color, rankedTargets: rankedTargets, bigger: bigger)
+            for stage in stages {
+                for point in stage.positions { add(point.r, point.c) }
             }
         }
         return out
@@ -513,11 +689,13 @@ enum Engine {
         var opened = Set<Pos>()
         for p in positions {
             for n in orthogonalNeighbors(of: p, rows: rows, cols: cols) {
-                guard var cell = grid[n.r][n.c],
-                      cell.blocker?.type == .chest else { continue }
-                cell.blocker = nil
+                guard var cell = grid[n.r][n.c], var blocker = cell.blocker,
+                      blocker.type == .chest, (blocker.requiredKeys ?? 0) <= 0 else { continue }
+                blocker.hits -= 1
+                blocker.layer = max(0, blocker.layer - 1)
+                cell.blocker = blocker.hits > 0 ? blocker : nil
                 grid[n.r][n.c] = cell
-                opened.insert(n)
+                if cell.blocker == nil { opened.insert(n) }
             }
         }
         return opened
@@ -527,23 +705,35 @@ enum Engine {
     static func openFirstChest(_ grid: inout Grid) -> Pos? {
         for r in 0..<grid.count {
             for c in 0..<grid[r].count {
-                guard var cell = grid[r][c],
-                      cell.blocker?.type == .chest else { continue }
-                cell.blocker = nil
+                guard var cell = grid[r][c], var blocker = cell.blocker,
+                      blocker.type == .chest else { continue }
+                let keysLeft = max(0, (blocker.requiredKeys ?? 1) - 1)
+                blocker.requiredKeys = keysLeft
+                cell.blocker = keysLeft > 0 ? blocker : nil
                 grid[r][c] = cell
-                return Pos(r: r, c: c)
+                return keysLeft == 0 ? Pos(r: r, c: c) : nil
             }
         }
         return nil
     }
 
     @discardableResult
-    static func clearMatches(_ grid: inout Grid, matches: Set<Pos>) -> ClearResult {
+    static func clearMatches(_ grid: inout Grid, matches: Set<Pos>,
+                             context: ClearContext = .normal) -> ClearResult {
         var cleared = Set<Pos>()
         var damaged = Set<Pos>()
-        for p in matches {
+        var candidates = matches
+        if context.damagesAdjacentBlockers {
+            for p in matches where isValid(p, in: grid) {
+                candidates.formUnion(orthogonalNeighbors(of: p, rows: grid.count, cols: grid[p.r].count))
+            }
+        }
+        for p in candidates where isValid(p, in: grid) {
             guard var cell = grid[p.r][p.c] else { continue }
+            let adjacent = !matches.contains(p)
             if var blocker = cell.blocker {
+                guard blocker.type.rules.canBeDamaged(by: context.source, adjacent: adjacent),
+                      (blocker.requiredKeys ?? 0) <= 0 || context.source == .key else { continue }
                 if blocker.type == .colorLock,
                    let required = blocker.requiredColor,
                    required.lowercased() != cell.color.lowercased() {
@@ -551,15 +741,22 @@ enum Engine {
                     continue
                 }
                 blocker.hits -= 1
+                blocker.layer = max(0, blocker.layer - 1)
                 damaged.insert(p)
                 if blocker.hits > 0 {
                     cell.blocker = blocker
                 } else {
                     cell.blocker = nil
                 }
+                if !adjacent, blocker.type.rules.clearsPieceWithLayer,
+                   cell.kind == .normal, cell.hasPiece {
+                    cell.piece = nil
+                    cleared.insert(p)
+                }
                 grid[p.r][p.c] = cell
-            } else if cell.kind == .normal {
-                grid[p.r][p.c] = nil
+            } else if !adjacent, cell.kind == .normal, cell.hasPiece {
+                cell.piece = nil
+                grid[p.r][p.c] = cell
                 cleared.insert(p)
             }
         }
@@ -573,12 +770,16 @@ enum Engine {
     static func collapseAndRefill(_ grid: Grid,
                                    colors: [String],
                                    mask: [[Bool]]? = nil,
-                                   cascadeBoost: Double = 0) -> Grid {
+                                   cascadeBoost: Double = 0,
+                                   portals: [LevelPortal] = [],
+                                   spawnWeights: [PieceColor: Double] = [:]) -> Grid {
         var rng = SystemRandomNumberGenerator()
         return collapseAndRefill(grid,
                                  colors: colors,
                                  mask: mask,
                                  cascadeBoost: cascadeBoost,
+                                 portals: portals,
+                                 spawnWeights: spawnWeights,
                                  rng: &rng)
     }
 
@@ -586,30 +787,58 @@ enum Engine {
                                                             colors: [String],
                                                             mask: [[Bool]]? = nil,
                                                             cascadeBoost: Double = 0,
+                                                            portals: [LevelPortal] = [],
+                                                            spawnWeights: [PieceColor: Double] = [:],
                                                             rng: inout R) -> Grid {
         let rows = grid.count
-        let cols = grid[0].count
+        let cols = grid.first?.count ?? 0
+        guard rows > 0, cols > 0, !colors.isEmpty else { return grid }
         var g = grid
-        for c in 0..<cols {
-            var playable: [Int] = []
-            for r in stride(from: rows - 1, through: 0, by: -1) {
-                if let m = mask, !m[r][c] { g[r][c] = nil; continue }
-                playable.append(r)
+        // Legacy nil vacancies are adapted to explicit empty slots. A supplied
+        // mask remains authoritative for holes in shaped boards.
+        for r in 0..<rows {
+            for c in 0..<cols {
+                if let mask, !mask[r][c] { g[r][c] = nil }
+                else if g[r][c] == nil { g[r][c] = Cell(piece: nil) }
             }
-            var stack: [Cell] = []
-            for r in playable { if let cell = g[r][c] { stack.append(cell) } }
-            var idx = 0
-            for r in playable {
-                if idx < stack.count {
-                    g[r][c] = stack[idx]
-                    idx += 1
-                } else {
-                    var picked = colors.randomElement(using: &rng)!
+        }
+        func compactColumn(_ c: Int) {
+            var segment: [Int] = []
+            func compact() {
+                let pieces = segment.compactMap { g[$0][c]?.piece }
+                for (index, r) in segment.enumerated() {
+                    g[r][c]?.piece = index < pieces.count ? pieces[index] : nil
+                }
+                segment.removeAll()
+            }
+            for r in stride(from: rows - 1, through: 0, by: -1) {
+                guard let cell = g[r][c], cell.blocker?.type.rules.blocksMovement != true else {
+                    compact()
+                    continue
+                }
+                segment.append(r)
+            }
+            compact()
+        }
+        // Route into empty exits before refill; bounded iterations prevent a
+        // portal/gravity cycle from trapping the turn forever.
+        let validPortals = validatedPortals(portals, in: g)
+        for _ in 0..<max(1, rows * cols) {
+            let previous = g
+            g = applyPortals(g, pairs: validPortals)
+            for c in 0..<cols { compactColumn(c) }
+            if g == previous { break }
+        }
+        for c in 0..<cols {
+            for r in stride(from: rows - 1, through: 0, by: -1) {
+                if let cell = g[r][c], !cell.hasPiece,
+                   cell.blocker?.type.rules.canContainPiece != false {
+                    var picked = weightedColor(colors, weights: spawnWeights, rng: &rng)
                     if cascadeBoost > 0, Double.random(in: 0...1, using: &rng) < cascadeBoost,
                        let biased = biasedRefillColor(g, r: r, c: c) {
                         picked = biased
                     }
-                    g[r][c] = Cell(id: uid(rng: &rng), color: picked, special: nil, kind: .normal)
+                    g[r][c]?.piece = Piece(id: uid(rng: &rng), legacyColorToken: picked)
                 }
             }
         }
@@ -619,22 +848,55 @@ enum Engine {
     static func applyPortals(_ grid: Grid, pairs: [LevelPortal]) -> Grid {
         guard !pairs.isEmpty else { return grid }
         var g = grid
-        let rows = g.count
-        let cols = g[0].count
-
-        func valid(_ p: Pos) -> Bool {
-            p.r >= 0 && p.r < rows && p.c >= 0 && p.c < cols && g[p.r][p.c] != nil
-        }
-
-        for pair in pairs {
+        for pair in validatedPortals(pairs, in: grid) {
             let from = pair.from
             let to = pair.to
-            guard valid(from), valid(to) else { continue }
-            let tmp = g[from.r][from.c]
-            g[from.r][from.c] = g[to.r][to.c]
-            g[to.r][to.c] = tmp
+            guard g[from.r][from.c]?.hasPiece == true,
+                  g[to.r][to.c]?.hasPiece == false,
+                  g[from.r][from.c]?.blocker?.type.rules.blocksMovement != true,
+                  g[to.r][to.c]?.blocker?.type.rules.blocksMovement != true else { continue }
+            let movingPiece = g[from.r][from.c]?.piece
+            g[to.r][to.c]?.piece = movingPiece
+            g[from.r][from.c]?.piece = nil
         }
         return g
+    }
+
+    static func validatedPortals(_ pairs: [LevelPortal], in grid: Grid) -> [LevelPortal] {
+        var sources = Set<Pos>()
+        var exits = Set<Pos>()
+        let valid = pairs.filter { pair in
+            guard pair.from != pair.to, isValid(pair.from, in: grid), isValid(pair.to, in: grid),
+                  grid[pair.from.r][pair.from.c] != nil, grid[pair.to.r][pair.to.c] != nil,
+                  !sources.contains(pair.from), !exits.contains(pair.to) else { return false }
+            sources.insert(pair.from)
+            exits.insert(pair.to)
+            return true
+        }
+        let links = Dictionary(uniqueKeysWithValues: valid.map { ($0.from, $0.to) })
+        return valid.filter { pair in
+            var visited: Set<Pos> = [pair.from]
+            var next: Pos? = pair.to
+            while let position = next {
+                guard visited.insert(position).inserted else { return false }
+                next = links[position]
+            }
+            return true
+        }
+    }
+
+    private static func weightedColor<R: RandomNumberGenerator>(_ colors: [String],
+                                                                weights: [PieceColor: Double],
+                                                                rng: inout R) -> String {
+        let values = colors.map { max(0, weights[PieceColor.fromLegacyToken($0)] ?? 1) }
+        let total = values.reduce(0, +)
+        guard total.isFinite, total > 0 else { return colors.randomElement(using: &rng)! }
+        var choice = Double.random(in: 0..<total, using: &rng)
+        for (index, value) in values.enumerated() {
+            choice -= value
+            if choice < 0 { return colors[index] }
+        }
+        return colors.last!
     }
 
     /// Returns positions of all chocolate tiles on the board.
@@ -681,7 +943,7 @@ enum Engine {
             let target = neighbors[picker(neighbors.count)]
             if var cell = g[target.r][target.c] {
                 cell.blocker = Blocker(type: .chocolate, hits: 1)
-                cell.special = nil
+                cell.piece = nil
                 g[target.r][target.c] = cell
                 return (g, target)
             }
@@ -713,7 +975,7 @@ enum Engine {
             let target = neighbors[Int.random(in: 0..<neighbors.count, using: &rng)]
             if var cell = g[target.r][target.c] {
                 cell.blocker = Blocker(type: .chocolate, hits: 1)
-                cell.special = nil
+                cell.piece = nil
                 g[target.r][target.c] = cell
                 return (g, target)
             }
@@ -753,7 +1015,7 @@ enum Engine {
             }
             guard bottom >= 0 else { continue }
             if let cell = g[bottom][c], cell.kind == kind {
-                g[bottom][c] = nil
+                g[bottom][c]?.piece = nil
                 collected.insert(Pos(r: bottom, c: c))
             }
         }
@@ -764,25 +1026,26 @@ enum Engine {
         guard !belts.isEmpty else { return grid }
         var g = grid
         let rows = g.count
-        let cols = g[0].count
+        let cols = g.first?.count ?? 0
 
         for belt in belts {
             guard belt.row >= 0, belt.row < rows else { continue }
             var positions: [Pos] = []
-            var cells: [Cell] = []
-            for c in 0..<cols {
-                if let cell = g[belt.row][c] {
-                    positions.append(Pos(r: belt.row, c: c))
-                    cells.append(cell)
+            func rotate() {
+                guard positions.count > 1 else { positions.removeAll(); return }
+                let pieces = positions.map { g[$0.r][$0.c]?.piece }
+                let shift = belt.direction >= 0 ? 1 : -1
+                for (index, pos) in positions.enumerated() {
+                    g[pos.r][pos.c]?.piece = pieces[(index - shift + positions.count) % positions.count]
                 }
+                positions.removeAll()
             }
-            guard positions.count > 1 else { continue }
-
-            let shift = belt.direction >= 0 ? 1 : -1
-            for (index, pos) in positions.enumerated() {
-                let sourceIndex = (index - shift + positions.count) % positions.count
-                g[pos.r][pos.c] = cells[sourceIndex]
+            for c in 0..<cols {
+                if let cell = g[belt.row][c], cell.blocker?.type.rules.blocksMovement != true {
+                    positions.append(Pos(r: belt.row, c: c))
+                } else { rotate() }
             }
+            rotate()
         }
         return g
     }
@@ -821,6 +1084,13 @@ enum Engine {
     }
 
     /// Returns the swapped grid only if the swap creates a match at either position.
+    static func canSwap(_ grid: Grid, _ a: Pos, _ b: Pos) -> Bool {
+        guard isValid(a, in: grid), isValid(b, in: grid),
+              abs(a.r - b.r) + abs(a.c - b.c) == 1,
+              let first = grid[a.r][a.c], let second = grid[b.r][b.c] else { return false }
+        return first.hasPiece && second.hasPiece && !first.isMovementBlocked && !second.isMovementBlocked
+    }
+
     static func swapIfValid(_ grid: Grid, _ a: Pos, _ b: Pos) -> (didSwap: Bool, grid: Grid) {
         guard let classified = classifySwap(grid, a, b) else { return (false, grid) }
         return (true, classified.grid)
@@ -830,7 +1100,7 @@ enum Engine {
     /// activation it represents.
     static func classifySwap(_ grid: Grid, _ a: Pos, _ b: Pos) -> ClassifiedSwap? {
         var g = grid
-        let rows = g.count, cols = g[0].count
+        let rows = g.count, cols = g.first?.count ?? 0
         guard a.r >= 0, a.r < rows, a.c >= 0, a.c < cols,
               b.r >= 0, b.r < rows, b.c >= 0, b.c < cols,
               abs(a.r - b.r) + abs(a.c - b.c) == 1,
@@ -839,9 +1109,11 @@ enum Engine {
         }
         let cellA = g[a.r][a.c]!
         let cellB = g[b.r][b.c]!
-        let tmp = g[a.r][a.c]
-        g[a.r][a.c] = g[b.r][b.c]
-        g[b.r][b.c] = tmp
+        guard cellA.hasPiece, cellB.hasPiece,
+              cellA.blocker?.type.rules.blocksMovement != true,
+              cellB.blocker?.type.rules.blocksMovement != true else { return nil }
+        g[a.r][a.c]?.piece = cellB.piece
+        g[b.r][b.c]?.piece = cellA.piece
 
         if let first = cellA.special,
            let second = cellB.special,
@@ -877,7 +1149,7 @@ enum Engine {
     }
 
     static func hasAnyMoves(_ grid: Grid) -> Bool {
-        let rows = grid.count, cols = grid[0].count
+        let rows = grid.count, cols = grid.first?.count ?? 0
         for r in 0..<rows {
             for c in 0..<cols {
                 let here = Pos(r: r, c: c)
@@ -900,7 +1172,7 @@ enum Engine {
     }
 
     static func scoredLegalMoves(_ grid: Grid) -> [(move: (Pos, Pos), score: Int)] {
-        let rows = grid.count, cols = grid[0].count
+        let rows = grid.count, cols = grid.first?.count ?? 0
         var moves: [(move: (Pos, Pos), score: Int)] = []
 
         let consider: (Pos, Pos) -> Void = { a, b in
@@ -938,6 +1210,40 @@ enum Engine {
 
     static func hasUsefulMove(_ grid: Grid, minimumScore: Int) -> Bool {
         bestMoveScore(grid) >= minimumScore
+    }
+
+    /// Shuffle whole movable pieces, preserving identity, powers and every
+    /// anchored tile. Failure is explicit so callers never accept a dead board.
+    static func shuffledPlayableGrid(_ grid: Grid, maxAttempts: Int = 200) -> Grid? {
+        var rng = SystemRandomNumberGenerator()
+        return shuffledPlayableGrid(grid, maxAttempts: maxAttempts, rng: &rng)
+    }
+
+    static func shuffledPlayableGrid<R: RandomNumberGenerator>(_ grid: Grid,
+                                                               maxAttempts: Int = 200,
+                                                               rng: inout R) -> Grid? {
+        var positions: [Pos] = []
+        var pieces: [Piece] = []
+        for r in grid.indices {
+            for c in grid[r].indices {
+                guard let cell = grid[r][c], let piece = cell.piece,
+                      !cell.isMovementBlocked else { continue }
+                positions.append(Pos(r: r, c: c))
+                pieces.append(piece)
+            }
+        }
+        guard positions.count > 1, maxAttempts > 0 else { return nil }
+        for _ in 0..<min(maxAttempts, 10_000) {
+            var candidate = grid
+            let shuffled = pieces.shuffled(using: &rng)
+            for (index, position) in positions.enumerated() {
+                candidate[position.r][position.c]?.piece = shuffled[index]
+            }
+            if findMatches(candidate).isEmpty, findSquares(candidate).isEmpty, hasAnyMoves(candidate) {
+                return candidate
+            }
+        }
+        return nil
     }
 
     /// Expands an already-legal clear into Sugar Rush's cross. The preferred
@@ -1052,6 +1358,9 @@ enum Engine {
             case .stripedRow,
                  .stripedCol:  score += 200
             case .fish:        score += 250
+            case .lineBlast:   score += 350
+            case .rocket:      score += 300
+            case .ufo:         score += 400
             }
         }
         score += longestRun * 10
@@ -1085,26 +1394,28 @@ enum Engine {
     private static func wouldMakeInitialMatch(_ g: Grid, r: Int, c: Int, color: String) -> Bool {
         if c >= 2, g[r][c - 1]?.color == color, g[r][c - 2]?.color == color { return true }
         if r >= 2, g[r - 1][c]?.color == color, g[r - 2][c]?.color == color { return true }
+        if r >= 1, c >= 1, g[r - 1][c]?.color == color,
+           g[r][c - 1]?.color == color, g[r - 1][c - 1]?.color == color { return true }
         return false
     }
 
     private static func createsMatch(_ g: Grid, at p: Pos) -> Bool {
         let rows = g.count, cols = g[0].count
-        guard let here = g[p.r][p.c], here.kind == .normal else { return false }
+        guard let here = g[p.r][p.c], here.isMatchable else { return false }
         let color = here.color
 
         var cnt = 1
         var x = p.c - 1
-        while x >= 0, g[p.r][x]?.kind == .normal, g[p.r][x]?.color == color { cnt += 1; x -= 1 }
+        while x >= 0, g[p.r][x]?.isMatchable == true, g[p.r][x]?.color == color { cnt += 1; x -= 1 }
         x = p.c + 1
-        while x < cols, g[p.r][x]?.kind == .normal, g[p.r][x]?.color == color { cnt += 1; x += 1 }
+        while x < cols, g[p.r][x]?.isMatchable == true, g[p.r][x]?.color == color { cnt += 1; x += 1 }
         if cnt >= 3 { return true }
 
         cnt = 1
         var y = p.r - 1
-        while y >= 0, g[y][p.c]?.kind == .normal, g[y][p.c]?.color == color { cnt += 1; y -= 1 }
+        while y >= 0, g[y][p.c]?.isMatchable == true, g[y][p.c]?.color == color { cnt += 1; y -= 1 }
         y = p.r + 1
-        while y < rows, g[y][p.c]?.kind == .normal, g[y][p.c]?.color == color { cnt += 1; y += 1 }
+        while y < rows, g[y][p.c]?.isMatchable == true, g[y][p.c]?.color == color { cnt += 1; y += 1 }
         return cnt >= 3
     }
 
@@ -1112,10 +1423,10 @@ enum Engine {
     /// spawns a Fish special.
     private static func isUniformPlainSquare(_ g: Grid, _ quad: [Pos]) -> Bool {
         guard let first = g[quad[0].r][quad[0].c],
-              first.blocker == nil, first.kind == .normal, first.special == nil else { return false }
+              first.blocker == nil, first.isMatchable, first.special == nil else { return false }
         for p in quad.dropFirst() {
             guard let cell = g[p.r][p.c],
-                  cell.blocker == nil, cell.kind == .normal, cell.special == nil,
+                  cell.blocker == nil, cell.isMatchable, cell.special == nil,
                   cell.color == first.color else { return false }
         }
         return true

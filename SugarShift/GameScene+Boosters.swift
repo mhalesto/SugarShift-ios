@@ -5,6 +5,7 @@ extension GameScene {
     // MARK: - +Moves quantity selector
 
     func showQuantityPopup() {
+        guard canAcceptBoardInput else { return }
         hideQuantityPopup()
         guard let circle = movesBoosterCircle else { return }
 
@@ -119,6 +120,7 @@ extension GameScene {
     }
 
     func buyMoves() {
+        guard canAcceptBoardInput else { return }
         guard cash >= movesBuyCost else {
             Effects.haptic(.soft)
             // Briefly shake the cash pill to signal "not enough"
@@ -162,6 +164,7 @@ extension GameScene {
     // MARK: - Booster handlers
 
     func handleBoosterTap(_ label: String) {
+        guard canAcceptBoardInput else { return }
         if levelConfig.modifiers.contains(.noBoosters) {
             showStatusToast("Boosters are locked on this level.")
             Effects.haptic(.soft)
@@ -213,6 +216,7 @@ extension GameScene {
             insufficientCashFeedback()
             return
         }
+        guard performShuffle(ensureMove: true) else { return }
         shuffleCount -= 1
         boosterUsedThisAttempt = true
         Analytics.track("booster_use",
@@ -220,15 +224,16 @@ extension GameScene {
                                      "source": "stock",
                                      "level": "\(levelNumber)"])
         rebuildShuffleChip()
-        performShuffle(ensureMove: true)
         Effects.haptic(.medium)
         Effects.notify(.success)
     }
 
     func tryUseLife() {
+        let regeneratedLives = Persistence.lives
+        guard regeneratedLives < livesMax else { updateHUD(); return }
         guard cash >= lifeCost else { insufficientCashFeedback(); return }
         cash -= lifeCost
-        lives = min(livesMax, lives + 1)
+        lives = min(livesMax, regeneratedLives + 1)
         Analytics.track("coin_spend",
                         properties: ["item": "life",
                                      "coins": "\(lifeCost)",
@@ -315,6 +320,7 @@ extension GameScene {
     // MARK: - Booster execution on tile
 
     func executeBoosterOnTile(_ pos: Pos) {
+        guard canAcceptBoardInput else { return }
         switch boosterMode {
         case .hammer:
             performHammer(at: pos)
@@ -326,57 +332,25 @@ extension GameScene {
     }
 
     func performHammer(at pos: Pos) {
-        guard let node = nodes[pos.r][pos.c] else { return }
-        let preClear = cellSnapshot(for: Set([pos]))
-        // Spend a stocked hammer first; fall back to cash.
-        let source = hammerCount > 0 ? "stock" : "coins"
+        guard canAcceptBoardInput, let cell = grid[pos.r][pos.c],
+              cell.hasPiece || cell.blocker != nil,
+              cell.blocker?.type.rules.canBeDamaged(by: .hammer, adjacent: false) != false,
+              hammerCount > 0 || cash >= hammerCost else { return }
+        takeUndoSnapshot()
         if hammerCount > 0 { hammerCount -= 1 } else { cash -= hammerCost }
         boosterUsedThisAttempt = true
-        Analytics.track("booster_use",
-                        properties: ["type": "hammer",
-                                     "source": source,
-                                     "level": "\(levelNumber)"])
         cancelBoosterMode()
-        Audio.shared.play(.bomb)
-
-        // Hammering a BOMB = chain detonation (3×3 area + lightning + flash + shake)
-        if grid[pos.r][pos.c]?.special == .bomb {
-            detonateBomb(at: pos, tappedNode: node)
-            return
-        }
-
-        // Regular tile hammer — single-tile pop
-        Effects.haptic(.heavy)
-        let tint = UIColor(hex: (node.userData?["color"] as? String) ?? "#FFFFFF")
-        let burst = Effects.makeTileBurst(tint: tint)
-        burst.position = node.position
-        worldNode.addChild(burst)
-        burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
-        let chunks = Effects.makeChunkBurst(tint: tint, count: 8, size: 17)
-        chunks.position = node.position
-        chunks.zPosition = 735
-        worldNode.addChild(chunks)
-
-        node.run(.sequence([
-            .group([.scale(to: 1.4, duration: 0.1), .fadeOut(withDuration: 0.18)]),
-            .removeFromParent()
-        ]))
-        nodes[pos.r][pos.c] = nil
-        grid[pos.r][pos.c] = nil
-        recordGoalProgress(preClear: preClear,
-                           cleared: Set([pos]),
-                           damaged: Set())
-        if preClear[pos]?.blocker?.type == .chest {
-            openedChests += 1
-            awardChestRewards(opened: Set([pos]))
-        }
-
-        Effects.shake(worldNode, intensity: 6, duration: 0.18)
-
         isResolving = true
-        run(.wait(forDuration: 0.2)) { [weak self] in
-            self?.applyCollapseAndRefill()
-        }
+        gamePhase = .activatingSpecial
+        cascadeDepth = 0
+        turnConsumesMove = false
+        let affected = Engine.expandMatchesWithSpecials(grid, [pos],
+            bigger: specialBlastIsExpanded,
+            rankedTargets: fishTargets(count: 16, excluding: [pos]))
+        resolveManualClear(affected, banner: String(localized: "Sweet Smash!"),
+                           tint: UIColor(hex: "#FFA348"), scorePerTile: 30,
+                           center: point(forRow: pos.r, col: pos.c), context: .hammer)
+        updateHUD()
     }
 
     /// Big showpiece bomb detonation when the player smashes a bomb tile with
@@ -516,8 +490,16 @@ extension GameScene {
     }
 
     func performSwapPick(_ pos: Pos) {
+        guard canAcceptBoardInput, grid[pos.r][pos.c]?.hasPiece == true,
+              grid[pos.r][pos.c]?.isMovementBlocked == false else { return }
         if let first = swapFirstPick {
+            guard Engine.canSwap(grid, first, pos), swapCount > 0 || cash >= swapCost else {
+                Effects.haptic(.soft)
+                return
+            }
+            takeUndoSnapshot()
             // Force-swap regardless of validity. Stocked swap first; else cash.
+            let activation = Engine.classifySwap(grid, first, pos)?.activation
             let source = swapCount > 0 ? "stock" : "coins"
             if swapCount > 0 { swapCount -= 1 } else { cash -= swapCost }
             boosterUsedThisAttempt = true
@@ -531,19 +513,30 @@ extension GameScene {
             let posB = point(forRow: pos.r, col: pos.c)
 
             // Swap in grid
-            let tmp = grid[first.r][first.c]
-            grid[first.r][first.c] = grid[pos.r][pos.c]
-            grid[pos.r][pos.c] = tmp
+            let tmp = grid[first.r][first.c]?.piece
+            let secondPiece = grid[pos.r][pos.c]?.piece
+            grid[first.r][first.c]?.piece = secondPiece
+            grid[pos.r][pos.c]?.piece = tmp
             nodes[first.r][first.c] = nodeB
             nodes[pos.r][pos.c] = nodeA
 
             cancelBoosterMode()
             isResolving = true
+            turnConsumesMove = false
+            gamePhase = .swapping
             Effects.haptic(.medium)
             nodeA?.run(.move(to: posB, duration: 0.2))
             nodeB?.run(.move(to: posA, duration: 0.2)) { [weak self] in
-                self?.cascadeDepth = 0
-                self?.resolveCascade()
+                guard let self else { return }
+                self.cascadeDepth = 0
+                switch activation {
+                case .specialCombo(_, let firstSpecial, let secondSpecial, let color):
+                    self.detonateSpecialCombo(first: firstSpecial, second: secondSpecial,
+                        positions: (first, pos), targetColor: color)
+                case .colorBomb(let origin, let color):
+                    self.detonateColorBomb(at: origin, targetColor: color)
+                default: self.resolveCascade()
+                }
             }
         } else {
             // First pick — highlight and wait for second
@@ -561,40 +554,45 @@ extension GameScene {
         }
     }
 
-    func performShuffle(ensureMove: Bool = false) {
-        var positions: [Pos] = []
-        var cells: [Cell] = []
+    @discardableResult
+    func performShuffle(ensureMove: Bool = false) -> Bool {
+        guard let shuffled = Engine.shuffledPlayableGrid(grid, rng: &gameplayRNG) else {
+            showStatusToast(String(localized: "No safe shuffle available. Try a special or Hammer."))
+            return false
+        }
+        isResolving = true
+        gamePhase = .shuffling
+        let oldPositions = Dictionary(uniqueKeysWithValues: boardSnapshot().compactMap { position, cell in
+            cell.hasPiece ? (cell.id, point(forRow: position.r, col: position.c)) : nil
+        })
+        grid = shuffled
+        rebuildAllNodes()
         for r in 0..<rows {
             for c in 0..<cols {
-                if let cell = grid[r][c], cell.blocker == nil, cell.special == nil {
-                    positions.append(Pos(r: r, c: c))
-                    cells.append(cell)
-                }
+                guard let cell = grid[r][c], cell.hasPiece, let node = nodes[r][c],
+                      let origin = oldPositions[cell.id] else { continue }
+                let destination = node.position
+                node.position = origin
+                node.run(.move(to: destination, duration: Persistence.reduceMotion ? 0.12 : 0.30))
             }
         }
-        guard !positions.isEmpty else { return }
-        var best = grid
-        for attempt in 0..<30 {
-            var candidate = grid
-            let shuffled = cells.shuffled(using: &gameplayRNG)
-            for (i, p) in positions.enumerated() {
-                let source = shuffled[i]
-                candidate[p.r][p.c]?.color = source.color
-                candidate[p.r][p.c]?.special = source.special
-                candidate[p.r][p.c]?.kind = source.kind
-            }
-            best = candidate
-            if !ensureMove || Engine.hasAnyMoves(candidate) || attempt == 29 { break }
+        run(.wait(forDuration: Persistence.reduceMotion ? 0.14 : 0.32)) { [weak self] in
+            self?.isResolving = false
+            self?.scheduleIdleHint()
+            self?.checkLevelEnd()
         }
-        grid = best
-        rebuildAllNodes()
+        return true
     }
 
     func autoReshuffleNoMoves() {
         isResolving = true
         let earlyHelp = levelNumber <= 20
         if earlyHelp { freeStuckReshufflesThisLevel += 1 }
-        performShuffle(ensureMove: true)
+        turnConsumesMove = false
+        guard performShuffle(ensureMove: true) else {
+            isResolving = false
+            return
+        }
         showStatusToast(earlyHelp ? "No good moves, reshuffling" : "No moves left on board, reshuffling")
         Effects.showComboBanner(text: earlyHelp ? "FREE SHUFFLE!" : "RESHUFFLE!",
                                 color: UIColor(hex: "#60A5FA"),
@@ -603,9 +601,6 @@ extension GameScene {
                         properties: ["level": "\(levelNumber)",
                                      "free": earlyHelp ? "true" : "false",
                                      "count": "\(freeStuckReshufflesThisLevel)"])
-        run(.wait(forDuration: 0.45)) { [weak self] in
-            self?.resolveCascade()
-        }
     }
 
     func refreshNode(at pos: Pos) {
@@ -621,8 +616,6 @@ extension GameScene {
     }
 
     func rebuildShuffleChip() {
-        // Rebuild the footer card so the shuffle chip count refreshes
-        rebuildHUD()
         updateHUD()
     }
 

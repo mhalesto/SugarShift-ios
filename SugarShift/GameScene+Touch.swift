@@ -83,17 +83,28 @@ extension GameScene {
         // 2. Walk the node tree for HUD targets (booster / settings / cart / badge)
         var node: SKNode? = atPoint(p)
         while let n = node {
+            if n.name == "mapButton" {
+                if canAcceptBoardInput { confirmReturnToMap() }
+                return
+            }
+            if n.name == "playButton" {
+                if canAcceptBoardInput {
+                    cancelBoosterMode()
+                    showGuidedMoveHint(delay: 0, reason: "play_navigation")
+                }
+                return
+            }
             if n.name == "movesQuantityBadge" {
                 showQuantityPopup()
                 Effects.haptic(.light)
                 return
             }
             if n.name == "settingsButton" {
-                openSettings()
+                if canAcceptBoardInput { openSettings() }
                 return
             }
             if n.name == "cartButton" {
-                openShop()
+                if canAcceptBoardInput { openShop() }
                 return
             }
             if n.name == "undoButton" {
@@ -121,6 +132,8 @@ extension GameScene {
             node = n.parent
         }
 
+        guard canAcceptBoardInput else { return }
+
         if smashTargeting,
            let pos = cellAt(p),
            grid[pos.r][pos.c]?.kind == .normal {
@@ -139,8 +152,8 @@ extension GameScene {
         }
 
         // 3. Tile interaction
-        guard !isResolving else { return }
-        guard let pos = cellAt(p), grid[pos.r][pos.c] != nil else { return }
+        guard let pos = cellAt(p), grid[pos.r][pos.c]?.hasPiece == true,
+              grid[pos.r][pos.c]?.isMovementBlocked == false else { return }
         dragStartPoint = p
         cancelIdleHint()
 
@@ -168,7 +181,7 @@ extension GameScene {
             return
         }
 
-        guard !isResolving, let t = touches.first, let start = dragStartPoint, let first = firstSelection else { return }
+        guard canAcceptBoardInput, let t = touches.first, let start = dragStartPoint, let first = firstSelection else { return }
         let p = t.location(in: self)
         let dx = p.x - start.x
         let dy = p.y - start.y
@@ -426,6 +439,9 @@ extension GameScene {
             case .colorBomb: name = String(localized: "COLOR BOMB")
             case .bomb: name = String(localized: "BOMB")
             case .fish: name = String(localized: "FISH")
+            case .lineBlast: name = String(localized: "LINE BLAST")
+            case .rocket: name = String(localized: "ROCKET")
+            case .ufo: name = String(localized: "UFO")
             }
             base = String(localized: "CREATES") + " " + name
         case .powerClear(let count):

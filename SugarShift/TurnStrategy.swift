@@ -407,7 +407,7 @@ enum TacticalMoveEvaluator {
         case .clearBlockers:
             return cell.blocker != nil
         case .collectColor(let index, _):
-            let palette = Array(Theme.colors.prefix(config.colors))
+            let palette = config.pieceTypes.map(\.legacyToken)
             let target = palette[max(0, index) % max(1, palette.count)]
             return cell.color.lowercased() == target.lowercased()
         case .createSpecials:
@@ -429,7 +429,7 @@ enum TacticalMoveEvaluator {
     static func rankedTargets(in grid: Grid,
                               config: LevelConfig,
                               excluding: Set<Pos>) -> [Pos] {
-        let palette = Array(Theme.colors.prefix(config.colors))
+        let palette = config.pieceTypes.map(\.legacyToken)
         let goalColor: String?
         if case .collectColor(let index, _) = config.goal {
             goalColor = palette[max(0, index) % max(1, palette.count)].lowercased()

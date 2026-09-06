@@ -798,29 +798,29 @@ struct SugarShiftTests {
         #expect(subtitle?.text == "Added +63 coins")
     }
 
-    @Test func nonScoreGoalsUseObjectiveMasteryForStars() {
+    @Test func nonScoreGoalsUseScoreThresholdsForStars() {
         let config = Levels.config(for: 128)
         #expect(config.goal != .score)
-        #expect(LevelScoring.previewSummary(for: config).contains("objective"))
         #expect(config.target < 80_000)
 
-        let normalClear = LevelAttemptPerformance(score: config.target / 2,
+        let belowFirstThreshold = LevelAttemptPerformance(score: config.starThresholds.one - 1,
                                                   movesLeft: max(1, config.moves / 5),
                                                   movesAtStart: config.moves,
                                                   maxCascadeDepth: 2,
                                                   createdSpecials: 2,
                                                   detonatedBombs: 0,
                                                   objectiveProgress: 1)
-        #expect(LevelScoring.stars(for: config, performance: normalClear, won: true) >= 2)
+        #expect(LevelScoring.stars(for: config, performance: belowFirstThreshold, won: true) == 0)
 
-        let masteryClear = LevelAttemptPerformance(score: config.target,
+        let threeStarClear = LevelAttemptPerformance(score: config.starThresholds.three,
                                                    movesLeft: max(2, config.moves / 3),
                                                    movesAtStart: config.moves,
                                                    maxCascadeDepth: 4,
                                                    createdSpecials: 4,
                                                    detonatedBombs: 1,
                                                    objectiveProgress: 1)
-        #expect(LevelScoring.stars(for: config, performance: masteryClear, won: true) == 3)
+        #expect(LevelScoring.stars(for: config, performance: threeStarClear, won: true) == 3)
+        #expect(LevelScoring.previewSummary(for: config).contains("1★ \(config.starThresholds.one)"))
     }
 
     @Test func storeProductFallbackPricesMatchLocalStoreKitConfig() {

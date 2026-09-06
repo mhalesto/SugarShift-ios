@@ -272,57 +272,31 @@ enum LevelScoring {
                       performance: LevelAttemptPerformance,
                       won: Bool) -> Int {
         guard won else { return 0 }
-
-        if case .score = config.goal {
-            let t = config.starThresholds
-            if performance.score >= t.three { return 3 }
-            if performance.score >= t.two { return 2 }
-            return 1
-        }
-
-        let mastery = masteryScore(for: config, performance: performance)
-        if mastery >= 0.72 { return 3 }
-        if mastery >= 0.50 { return 2 }
-        return 1
+        let t = config.starThresholds
+        if performance.score >= t.three { return 3 }
+        if performance.score >= t.two { return 2 }
+        if performance.score >= t.one { return 1 }
+        return 0
     }
 
     static func meterProgress(for config: LevelConfig,
                               performance: LevelAttemptPerformance,
                               objectiveComplete: Bool) -> Double {
-        if case .score = config.goal {
-            return ratio(performance.score, config.starThresholds.three)
-        }
-
-        let objectiveBand = min(0.34, max(0, performance.objectiveProgress) * 0.34)
-        guard objectiveComplete else { return objectiveBand }
-
-        let mastery = masteryScore(for: config, performance: performance)
-        return min(1, 0.34 + mastery * 0.66)
+        ratio(performance.score, config.starThresholds.three)
     }
 
     static func nextStarText(for config: LevelConfig,
                              performance: LevelAttemptPerformance,
                              objectiveComplete: Bool) -> String {
-        if case .score = config.goal {
-            let t = config.starThresholds
-            if performance.score < t.one { return "1 star at \(t.one)" }
-            if performance.score < t.two { return "Next star \(t.two)" }
-            if performance.score < t.three { return "Next star \(t.three)" }
-            return "3 star score reached"
-        }
-
-        guard objectiveComplete else { return "1 star: finish objective" }
-        let stars = stars(for: config, performance: performance, won: true)
-        if stars < 2 { return "2 stars: save moves or combo" }
-        if stars < 3 { return "3 stars: big combo finish" }
-        return "3 star mastery reached"
+        let t = config.starThresholds
+        if performance.score < t.one { return "1 star at \(t.one)" }
+        if performance.score < t.two { return "Next star \(t.two)" }
+        if performance.score < t.three { return "Next star \(t.three)" }
+        return "3 star score reached"
     }
 
     static func previewSummary(for config: LevelConfig) -> String {
-        if case .score = config.goal {
-            return "1★ \(config.starThresholds.one)  2★ \(config.starThresholds.two)  3★ \(config.starThresholds.three)"
-        }
-        return "1★ objective  2★ efficient clear  3★ combo mastery"
+        "1★ \(config.starThresholds.one)  2★ \(config.starThresholds.two)  3★ \(config.starThresholds.three)"
     }
 
     private static func masteryScore(for config: LevelConfig,

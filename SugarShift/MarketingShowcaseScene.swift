@@ -550,6 +550,8 @@ final class SugarShiftMarketingShowcaseScene: SKScene {
 
         if let blocker {
             switch blocker.type {
+            case .honey, .stone, .cage, .licorice, .solidX, .cream, .bubble, .magicFrost, .donut:
+                BoardRenderer.addBlocker(blocker, to: container, size: tile, underPiece: false)
             case .ice:
                 let ice = SKShapeNode(rectOf: CGSize(width: tile * 0.84, height: tile * 0.84), cornerRadius: tile * 0.18)
                 ice.fillColor = UIColor(hex: "#7DD3FC").withAlphaComponent(0.35)
@@ -633,6 +635,10 @@ final class SugarShiftMarketingShowcaseScene: SKScene {
 
     private func drawSpecial(_ special: Special, tile: CGFloat, on node: SKNode) {
         switch special {
+        case .lineBlast, .rocket, .ufo:
+            let art = GameArt.sprite(BoardRenderer.specialAsset(special), fitting: CGSize(width: tile, height: tile))
+            art.zPosition = 4
+            node.addChild(art)
         case .stripedRow, .stripedCol:
             let stripe = SKShapeNode(rectOf: CGSize(width: special == .stripedRow ? tile * 0.78 : tile * 0.18,
                                                     height: special == .stripedRow ? tile * 0.18 : tile * 0.78),

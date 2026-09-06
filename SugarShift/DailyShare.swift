@@ -62,6 +62,14 @@ enum DailyShare {
             case .chocolate: return "🍫"
             case .syrup:     return "🍯"
             case .countdown: return "⏰"
+            case .honey: return "🍯"
+            case .stone, .solidX: return "🪨"
+            case .cage: return "🔒"
+            case .licorice: return "◼️"
+            case .cream: return "🧁"
+            case .bubble: return "🫧"
+            case .magicFrost: return "❄️"
+            case .donut: return "🍩"
             }
         }
         switch cell.kind {

@@ -8,7 +8,8 @@ enum Theme {
         "#10B981", // emerald
         "#A78BFA", // violet
         "#F59E0B", // amber
-        "#EF4444"  // red
+        "#EF4444", // heart (legacy red token)
+        "#EC4899"  // strawberry
     ]
 
     static let fruits: [String] = ["🍊", "🍇", "🫐", "🍏", "🍌", "🍒", "🍓", "🥭"]
@@ -32,8 +33,8 @@ enum Theme {
     /// Human-readable fruit names parallel to `fruits`, used for VoiceOver
     /// tile labels so the board is perceivable with the screen reader on.
     static let fruitNames: [String] = [
-        "orange", "grape", "blueberry", "green apple",
-        "banana", "cherry", "strawberry", "mango"
+        "orange", "grape", "blueberry", "leaf",
+        "banana", "heart", "strawberry", "mango"
     ]
 
     static func fruitName(forColor color: String) -> String {
@@ -73,7 +74,7 @@ enum Theme {
     }
 
     static func emojiTexture(forColor color: String) -> SKTexture {
-        emojiTexture(emoji(forColor: color))
+        GameArt.fruit(.fromLegacyToken(color))
     }
 
     /// Draws a glossy candy/gem at high res for use as an SKSpriteNode texture.
@@ -155,7 +156,7 @@ enum Theme {
     }
 }
 
-private extension UIColor {
+extension UIColor {
     func lighter(by f: CGFloat) -> UIColor {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         getRed(&r, green: &g, blue: &b, alpha: &a)

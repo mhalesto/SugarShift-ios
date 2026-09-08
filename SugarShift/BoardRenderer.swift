@@ -35,7 +35,10 @@ enum BoardRenderer {
         body.fillColor = .clear
         body.strokeColor = Persistence.highContrast ? UIColor.white : .clear
         body.lineWidth = Persistence.highContrast ? 2 : 0.6
-        body.addChild(GameplayHUDArt.tile(size: size))
+        let background = GameplayHUDArt.tile(size: size)
+        background.name = "tileBackground"
+        background.alpha = CGFloat(1 - Persistence.boardTransparency)
+        body.addChild(background)
         container.addChild(body)
         if let blocker = cell.blocker, blocker.type == .jelly {
             addBlocker(blocker, to: container, size: size, underPiece: true, theme: theme)
@@ -92,6 +95,7 @@ enum BoardRenderer {
         let artName = theme?.blockerAsset(blocker) ?? blockerAsset(blocker)
         if GameArt.texture(artName) != nil {
             let art = GameArt.boardSprite(artName, fitting: CGSize(width: size * 0.97, height: size * 0.97))
+            art.name = "blockerArt"
             art.zPosition = underPiece ? 1 : 7
             if [.ice, .magicFrost, .bubble].contains(blocker.type) {
                 art.alpha = 0.72
@@ -115,6 +119,7 @@ enum BoardRenderer {
         } else if [.lock, .colorLock, .cage, .crate, .vine].contains(blocker.type) {
             let wooden = blocker.type == .crate || blocker.type == .vine
             let frame = SKNode()
+            frame.name = "blockerArt"
             frame.zPosition = underPiece ? 1 : 7
             let edge = size * 0.39
             if wooden {
@@ -160,6 +165,7 @@ enum BoardRenderer {
             default: color = UIColor(hex: "#9FA7BA")
             }
             let shell = SKShapeNode(rectOf: CGSize(width: size * 0.88, height: size * 0.88), cornerRadius: size * 0.12)
+            shell.name = "blockerArt"
             shell.fillColor = color.withAlphaComponent(blocker.type.rules.canContainPiece ? 0.28 : 1)
             shell.strokeColor = color.lighter(by: 0.25)
             shell.lineWidth = 2
@@ -175,6 +181,7 @@ enum BoardRenderer {
             crack.lineWidth = blocker.hits == 1 ? 2.5 : 1
             shell.addChild(crack)
         }
+        BlockerDamageArtwork.apply(to: container, blocker: blocker, size: size, theme: theme)
         if (Persistence.highContrast && blocker.hits > 1) || blocker.type == .countdown {
             let value = GameSurface.label("\(blocker.countdown ?? blocker.hits)", size: max(10, size * 0.22), color: .white)
             let badge = SKShapeNode(circleOfRadius: size * 0.15)

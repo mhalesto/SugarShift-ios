@@ -63,6 +63,7 @@ typealias Grid = [[Cell?]]
 struct ClearResult {
     let cleared: Set<Pos>
     let damagedBlockers: Set<Pos>
+    var presentationEvents: [GamePresentationEvent] = []
 
     var affectedCount: Int { cleared.count + damagedBlockers.count }
 }
@@ -719,9 +720,11 @@ enum Engine {
 
     @discardableResult
     static func clearMatches(_ grid: inout Grid, matches: Set<Pos>,
-                             context: ClearContext = .normal) -> ClearResult {
+                             context: ClearContext = .normal,
+                             matchedPositions: Set<Pos>? = nil) -> ClearResult {
         var cleared = Set<Pos>()
         var damaged = Set<Pos>()
+        var events: [GamePresentationEvent] = []
         var candidates = matches
         if context.damagesAdjacentBlockers {
             for p in matches where isValid(p, in: grid) {
@@ -730,6 +733,7 @@ enum Engine {
         }
         for p in candidates where isValid(p, in: grid) {
             guard var cell = grid[p.r][p.c] else { continue }
+            let previousPiece = cell.piece
             let adjacent = !matches.contains(p)
             if var blocker = cell.blocker {
                 guard blocker.type.rules.canBeDamaged(by: context.source, adjacent: adjacent),
@@ -740,13 +744,17 @@ enum Engine {
                     grid[p.r][p.c] = cell
                     continue
                 }
+                let previousBlocker = blocker
+                events.append(.blockerHit(at: p, blocker: previousBlocker))
                 blocker.hits -= 1
                 blocker.layer = max(0, blocker.layer - 1)
                 damaged.insert(p)
                 if blocker.hits > 0 {
                     cell.blocker = blocker
+                    events.append(.blockerDamaged(at: p, before: previousBlocker, after: blocker))
                 } else {
                     cell.blocker = nil
+                    events.append(.blockerDestroyed(at: p, blocker: previousBlocker))
                 }
                 if !adjacent, blocker.type.rules.clearsPieceWithLayer,
                    cell.kind == .normal, cell.hasPiece {
@@ -759,8 +767,29 @@ enum Engine {
                 grid[p.r][p.c] = cell
                 cleared.insert(p)
             }
+            if let previousPiece, cell.piece == nil {
+                if context.source == .normalMatch, (matchedPositions ?? matches).contains(p) {
+                    events.append(.pieceMatched(at: p, piece: previousPiece))
+                }
+                if let special = previousPiece.special {
+                    events.append(.specialActivated(at: p, special: special))
+                }
+                events.append(.pieceDestroyed(at: p, piece: previousPiece))
+            }
         }
-        return ClearResult(cleared: cleared, damagedBlockers: damaged)
+        var ordered = events.enumerated().sorted { lhs, rhs in
+            let a = lhs.element.position ?? Pos(r: 0, c: 0)
+            let b = rhs.element.position ?? Pos(r: 0, c: 0)
+            if a.r != b.r { return a.r < b.r }
+            if a.c != b.c { return a.c < b.c }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+        let chain = ordered.compactMap { event -> Pos? in
+            if case .specialActivated(let position, _) = event { return position }
+            return nil
+        }
+        if chain.count > 1 { ordered.append(.specialChainTriggered(positions: chain)) }
+        return ClearResult(cleared: cleared, damagedBlockers: damaged, presentationEvents: ordered)
     }
 
     /// Drop existing tiles down, then fill empties at the top with new colors.
@@ -790,9 +819,21 @@ enum Engine {
                                                             portals: [LevelPortal] = [],
                                                             spawnWeights: [PieceColor: Double] = [:],
                                                             rng: inout R) -> Grid {
+        collapseAndRefillResult(grid, colors: colors, mask: mask, cascadeBoost: cascadeBoost,
+            portals: portals, spawnWeights: spawnWeights, rng: &rng, capturesPresentation: false).grid
+    }
+
+    static func collapseAndRefillResult<R: RandomNumberGenerator>(_ grid: Grid,
+        colors: [String], mask: [[Bool]]? = nil, cascadeBoost: Double = 0,
+        portals: [LevelPortal] = [], spawnWeights: [PieceColor: Double] = [:],
+        rng: inout R, capturesPresentation: Bool = true) -> BoardRefillResult {
+        var events: [GamePresentationEvent] = []
+        var transfers: [PortalPresentationTransfer] = []
         let rows = grid.count
         let cols = grid.first?.count ?? 0
-        guard rows > 0, cols > 0, !colors.isEmpty else { return grid }
+        guard rows > 0, cols > 0, !colors.isEmpty else {
+            return BoardRefillResult(grid: grid, presentationEvents: [], portalTransfers: [])
+        }
         var g = grid
         // Legacy nil vacancies are adapted to explicit empty slots. A supplied
         // mask remains authoritative for holes in shaped boards.
@@ -825,7 +866,8 @@ enum Engine {
         let validPortals = validatedPortals(portals, in: g)
         for _ in 0..<max(1, rows * cols) {
             let previous = g
-            g = applyPortals(g, pairs: validPortals)
+            g = applyPortals(g, pairs: validPortals, transfers: &transfers,
+                             capturesPresentation: capturesPresentation)
             for c in 0..<cols { compactColumn(c) }
             if g == previous { break }
         }
@@ -838,14 +880,23 @@ enum Engine {
                        let biased = biasedRefillColor(g, r: r, c: c) {
                         picked = biased
                     }
-                    g[r][c]?.piece = Piece(id: uid(rng: &rng), legacyColorToken: picked)
+                    let piece = Piece(id: uid(rng: &rng), legacyColorToken: picked)
+                    g[r][c]?.piece = piece
+                    if capturesPresentation { events.append(.pieceCreated(at: Pos(r: r, c: c), piece: piece)) }
                 }
             }
         }
-        return g
+        events.insert(contentsOf: transfers.map { .portalEntered(from: $0.from, to: $0.to) }, at: 0)
+        return BoardRefillResult(grid: g, presentationEvents: events, portalTransfers: transfers)
     }
 
     static func applyPortals(_ grid: Grid, pairs: [LevelPortal]) -> Grid {
+        var transfers: [PortalPresentationTransfer] = []
+        return applyPortals(grid, pairs: pairs, transfers: &transfers, capturesPresentation: false)
+    }
+
+    private static func applyPortals(_ grid: Grid, pairs: [LevelPortal],
+        transfers: inout [PortalPresentationTransfer], capturesPresentation: Bool) -> Grid {
         guard !pairs.isEmpty else { return grid }
         var g = grid
         for pair in validatedPortals(pairs, in: grid) {
@@ -856,6 +907,9 @@ enum Engine {
                   g[from.r][from.c]?.blocker?.type.rules.blocksMovement != true,
                   g[to.r][to.c]?.blocker?.type.rules.blocksMovement != true else { continue }
             let movingPiece = g[from.r][from.c]?.piece
+            if capturesPresentation, let movingPiece {
+                transfers.append(.init(pieceID: movingPiece.id, from: from, to: to))
+            }
             g[to.r][to.c]?.piece = movingPiece
             g[from.r][from.c]?.piece = nil
         }

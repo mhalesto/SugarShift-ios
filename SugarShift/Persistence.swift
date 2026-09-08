@@ -24,6 +24,8 @@ enum Persistence {
         static let largeText     = "ss.largeText"
         static let candyLabels   = "ss.candyLabels"
         static let shapedBoard   = "ss.shapedBoard"
+        static let boardTransparency = "ss.boardTransparency"
+        static let levelCardTransparency = "ss.levelCardTransparency"
         static let starsPrefix   = "ss.stars."
         static let claimedStarMilestone = "ss.claimedStarMilestone"
         static let hintPrefix    = "ss.hint."
@@ -448,6 +450,22 @@ enum Persistence {
     static var shapedBoard: Bool {
         get { storedBool(K.shapedBoard, default: true) }
         set { d.set(newValue, forKey: K.shapedBoard) }
+    }
+
+    /// Separate, local appearance preferences. Zero keeps the existing opaque
+    /// surfaces; one hides their backgrounds while preserving gameplay content.
+    static var boardTransparency: Double {
+        get { clampedTransparency(d.double(forKey: K.boardTransparency)) }
+        set { d.set(clampedTransparency(newValue), forKey: K.boardTransparency) }
+    }
+
+    static var levelCardTransparency: Double {
+        get { clampedTransparency(d.double(forKey: K.levelCardTransparency)) }
+        set { d.set(clampedTransparency(newValue), forKey: K.levelCardTransparency) }
+    }
+
+    private static func clampedTransparency(_ value: Double) -> Double {
+        value.isFinite ? min(1, max(0, value)) : 0
     }
 
     // MARK: - Per-level stars

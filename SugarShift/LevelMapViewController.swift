@@ -87,6 +87,12 @@ final class LevelMapViewController: UIViewController {
 
     // MARK: - Navigation
 
+    func startOpeningLevelIfEligible() {
+        guard presentedViewController == nil, Persistence.highestUnlockedLevel == 1,
+              !CampaignProgress.isCompleted(level: 1) else { return }
+        startLevel(1, dailyChallenge: nil)
+    }
+
     private func startLevel(_ n: Int, dailyChallenge: DailyChallenge?) {
         let game = GameViewController()
         game.levelNumber = n

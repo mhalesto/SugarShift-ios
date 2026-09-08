@@ -178,6 +178,7 @@ extension GameScene {
 
     func updateHUD() {
         updatePremiumHUD()
+        if worldNode != nil { worldEffects.synchronizeObjectives() }
     }
 
 

@@ -394,6 +394,7 @@ extension GameScene {
         let resolvedMatches = turnConsumesMove
             ? applySugarRushIfReady(to: matches, depth: 1)
             : matches
+        let objectiveBefore = worldEffects.beginObjectives()
         let preClear = boardSnapshot()
         let triggeredBombs = triggeredBombCount(in: resolvedMatches)
         let specialsInChain = resolvedMatches.filter { preClear[$0]?.special != nil }.count
@@ -441,62 +442,7 @@ extension GameScene {
         }
         if worldSequence == nil { Audio.shared.play(.fruitBreak, pan: soundPan(at: center)) }
 
-        for p in clearResult.cleared {
-            guard let n = nodes[p.r][p.c] else { continue }
-            let impactDelay = tileImpactDelay(at: p)
-            let burstTint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
-            let impactPosition = n.position
-            let fruitTexture = (n.childNode(withName: "emoji") as? SKSpriteNode)?.texture
-            n.run(.sequence([
-                .wait(forDuration: impactDelay),
-                .group([.scaleX(to: 1.07, duration: 0.035),
-                        .scaleY(to: 0.90, duration: 0.035)]),
-                .run { [weak self] in
-                    guard let self else { return }
-                    let burst = Effects.makeTileBurst(tint: burstTint)
-                    burst.position = impactPosition
-                    self.worldNode.addChild(burst)
-                    burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
-                    let fragments = Effects.makeFruitFragmentBurst(
-                        texture: fruitTexture,
-                        tint: burstTint,
-                        count: presentation?.isMajor == true ? 6 : 4,
-                        size: presentation?.isMajor == true ? 18 : 15)
-                    fragments.position = impactPosition
-                    self.worldNode.addChild(fragments)
-                },
-                .group([.scale(to: 1.38, duration: 0.11),
-                        .fadeOut(withDuration: 0.14)]),
-                .removeFromParent()
-            ]))
-            nodes[p.r][p.c] = nil
-        }
-
-        for p in clearResult.damagedBlockers {
-            guard let n = nodes[p.r][p.c] else { continue }
-            let impactDelay = tileImpactDelay(at: p)
-            let impactPosition = n.position
-            let blockerType = preClear[p]?.blocker?.type
-            let tint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
-            n.run(.sequence([
-                .wait(forDuration: impactDelay),
-                .run { [weak self] in
-                    guard let self else { return }
-                    if let blockerType {
-                        self.showMechanicImpact(blockerType, at: impactPosition)
-                    }
-                    let flash = Effects.makeImpactFlash(at: impactPosition, big: false)
-                    self.worldNode.addChild(flash)
-                    let chunks = Effects.makeChunkBurst(tint: tint, count: 5, size: 13)
-                    chunks.position = impactPosition
-                    chunks.zPosition = 735
-                    self.worldNode.addChild(chunks)
-                },
-                .scale(to: 1.08, duration: 0.06),
-                .scale(to: 1.0, duration: 0.10),
-                .run { [weak self] in self?.refreshNode(at: p) }
-            ]))
-        }
+        let materialDuration = presentResolvedClear(clearResult, delay: tileImpactDelay)
 
         if presentation == nil {
             let flash = Effects.makeImpactFlash(at: center, big: true)
@@ -507,23 +453,22 @@ extension GameScene {
                                         clearResult: clearResult,
                                         pointsPerTile: scorePerTile,
                                         multiplier: 1)
-        Effects.showScorePopup(comboPoints,
-                               at: center,
-                               in: self,
-                               color: tint)
+        presentClearScore(clearResult, preClear: preClear, pointsPerTile: scorePerTile,
+                          multiplier: 1, delay: tileImpactDelay)
         score += comboPoints
         feedPiggyBank(scoreEarned: comboPoints)
+        worldEffects.finishObjectives(objectiveBefore, events: clearResult.presentationEvents, delay: tileImpactDelay)
         showObjectiveCompleteIfNeeded()
         if worldSequence == nil {
             Effects.shake(worldNode,
-                          intensity: presentation?.isMajor == true ? 12 : min(8, CGFloat(affected) * 0.55),
+                          intensity: presentation?.isMajor == true ? 6 : min(4, CGFloat(affected) * 0.35),
                           duration: presentation?.isMajor == true ? 0.34 : 0.24)
         }
         let presentationDelay = presentation?.maximumDelay(in: resolvedMatches) ?? 0
-        let clearDuration = worldSequence?.finishesAt ?? max(0.24, presentationDelay + 0.20)
-        run(.wait(forDuration: clearDuration)) { [weak self] in
-            self?.worldNode.childNode(withName: "worldComboPresentation")?.removeFromParent()
-            self?.applyCollapseAndRefill()
+        let clearDuration = max(materialDuration, worldSequence?.finishesAt ?? max(0.24, presentationDelay + 0.20))
+        scheduleBoardResolution(after: clearDuration) { scene in
+            scene.worldNode.childNode(withName: "worldComboPresentation")?.removeFromParent()
+            scene.applyCollapseAndRefill()
         }
     }
 
@@ -536,7 +481,9 @@ extension GameScene {
             return
         }
 
+        let objectiveBefore = worldEffects.beginObjectives()
         cascadeDepth += 1
+        worldEffects.present(cascadeDepth == 1 ? [.cascadeStarted] : [.cascadeAdvanced(depth: cascadeDepth)])
         let depth = cascadeDepth
         maxCascadeDepth = max(maxCascadeDepth, depth)
         objectiveTracker.consume(.combo(depth: depth))
@@ -551,7 +498,8 @@ extension GameScene {
         // A 2x2 square clears like a match (and spawns a Fish below).
         for sq in squares { for p in sq { matches.insert(p) } }
         // Each activated fish also seeks a deterministic goal/blocker tile.
-        matches = addingObjectiveFishTargets(to: matches)
+        let fishDestinations = objectiveFishDestinations(for: matches)
+        matches.formUnion(fishDestinations.values)
 
         // Fish from a square outranks a plain striped; otherwise use the run spawn.
         let eligibleSpawnPositions = Set(matches.filter { p in
@@ -576,10 +524,14 @@ extension GameScene {
         let specialSpawnColor = specialSpawn.flatMap { grid[$0.position.r][$0.position.c]?.color }
 
         let preClear = boardSnapshot()
+        let specialPresentations = SpecialPresentationPlan.capture(in: grid, positions: matches,
+            fishDestinations: fishDestinations, bigger: specialBlastIsExpanded)
         let triggeredBombs = triggeredBombCount(in: matches)
-        let clearResult = Engine.clearMatches(&grid, matches: matches)
+        let clearResult = Engine.clearMatches(&grid, matches: matches,
+            matchedPositions: Set(groups.flatMap { $0 } + squares.flatMap { $0 }))
         let cleared = clearResult.affectedCount
         guard cleared > 0 else {
+            worldEffects.finishObjectives(objectiveBefore, events: clearResult.presentationEvents)
             finishCascadeTurn()
             return
         }
@@ -609,76 +561,15 @@ extension GameScene {
             sx += pt.x
             sy += pt.y
         }
-        let centroid = CGPoint(x: sx / CGFloat(cleared), y: sy / CGFloat(cleared))
-
-        // Animate clear + spawn per-tile bursts
-        let clearGroup = SKAction.sequence([
-            .group([.scaleX(to: 1.06, duration: 0.035),
-                    .scaleY(to: 0.90, duration: 0.035)]),
-            .group([.scale(to: 1.25, duration: 0.10),
-                    .fadeOut(withDuration: 0.15)])
-        ])
+        let centroid = CGPoint(x: sx / CGFloat(max(1, matches.count)), y: sy / CGFloat(max(1, matches.count)))
 
         let feedback = TurnFeedbackPolicy.feedback(depth: depth, cleared: cleared)
         let isBigSmash = feedback.tier >= .big
-        playTriggeredSpecialEffects(preClear: preClear.filter { matches.contains($0.key) })
+        let timing = CascadePresentationTiming(events: clearResult.presentationEvents,
+            matched: Set(groups.flatMap { $0 } + squares.flatMap { $0 }), specials: specialPresentations)
+        worldEffects.presentSpecials(specialPresentations, result: clearResult, timing: timing)
         Audio.shared.play(.fruitBreak, pan: soundPan(at: centroid))
-
-        var nodesToRemove: [SKNode] = []
-        for p in clearResult.cleared {
-            if let n = nodes[p.r][p.c] {
-                nodesToRemove.append(n)
-                nodes[p.r][p.c] = nil
-
-                // Tile-color particle burst at this tile
-                let tint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
-                let particleCount: Int
-                switch feedback.tier {
-                case .match: particleCount = 6
-                case .nice: particleCount = 8
-                case .big: particleCount = 10
-                case .huge, .epic: particleCount = 12
-                }
-                let burst = Effects.makeTileBurst(tint: tint, count: particleCount)
-                burst.position = n.position
-                worldNode.addChild(burst)
-                burst.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
-
-                let fruitTexture = (n.childNode(withName: "emoji") as? SKSpriteNode)?.texture
-                let fragmentCount = feedback.tier >= .huge ? 6 : (isBigSmash ? 5 : 3)
-                let fragments = Effects.makeFruitFragmentBurst(texture: fruitTexture,
-                                                                tint: tint,
-                                                                count: fragmentCount,
-                                                                size: isBigSmash ? 17 : 13)
-                fragments.position = n.position
-                fragments.zPosition = 735
-                worldNode.addChild(fragments)
-            }
-        }
-        for p in clearResult.damagedBlockers {
-            guard let n = nodes[p.r][p.c] else { continue }
-            let tint = UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF")
-            if let type = preClear[p]?.blocker?.type {
-                showMechanicImpact(type, at: n.position)
-                if type == .chocolate { chocolateDamagedThisTurn = true }
-            }
-            let flash = Effects.makeImpactFlash(at: n.position, big: false)
-            worldNode.addChild(flash)
-            let shards = Effects.makeShardBurst(tint: tint, count: 4, size: 12)
-            shards.position = n.position
-            shards.zPosition = 705
-            worldNode.addChild(shards)
-            shards.run(.sequence([.wait(forDuration: 0.7), .removeFromParent()]))
-            let chunks = Effects.makeChunkBurst(tint: tint, count: 5, size: 13)
-            chunks.position = n.position
-            chunks.zPosition = 735
-            worldNode.addChild(chunks)
-            n.run(.sequence([
-                .scale(to: 1.08, duration: 0.06),
-                .scale(to: 1.0, duration: 0.10),
-                .run { [weak self] in self?.refreshNode(at: p) }
-            ]))
-        }
+        let materialDuration = presentResolvedClear(clearResult, delay: timing.delay)
 
         // Bright flash + shockwave + star sparkles at the cluster centroid
         let flash = Effects.makeImpactFlash(at: centroid, big: isBigSmash)
@@ -704,14 +595,14 @@ extension GameScene {
         chargeSugarRushIfNeeded(depth: depth)
         // Depth increments once per step, so this fires once per chain.
         if depth == 3 { DailyMissions.record([.chainReaction]) }
-        let popupColor: UIColor = depth >= 2 ? UIColor(hex: "#FACC15") : .white
-        Effects.showScorePopup(added, at: centroid, in: self, color: popupColor)
+        presentClearScore(clearResult, preClear: preClear, pointsPerTile: pointsPerTile,
+                          multiplier: multiplier, delay: timing.delay)
 
         // Celebration channels are tiered by TurnFeedbackPolicy so each one
         // (banner → beam → shake → confetti) is rarer than the last.
         // Combo banner (depth 2+) takes priority over the big-clear phrase.
         if feedback.showsBanner, let combo = Effects.comboPhrase(forDepth: depth) {
-            Effects.showComboBanner(text: combo.text, color: combo.color, in: self)
+//            Effects.showComboBanner(text: combo.text, color: combo.color, in: self)
             Audio.shared.play(.combo(depth: depth))
         } else if feedback.showsBanner, let big = Effects.bigClearPhrase(forCount: cleared) {
             Effects.showComboBanner(text: big.text, color: big.color, in: self)
@@ -753,15 +644,21 @@ extension GameScene {
             showSpecialHint(spawn.special)
         }
 
-        let removeAction = SKAction.sequence([clearGroup, .removeFromParent()])
-        for n in nodesToRemove { n.run(removeAction) }
+        var presentationEvents = clearResult.presentationEvents
+        if let spawn = specialSpawn, clearResult.cleared.contains(spawn.position),
+           let cell = grid[spawn.position.r][spawn.position.c] {
+            presentationEvents.append(.specialCreated(at: spawn.position, special: spawn.special))
+            worldEffects.formSpecial(cell: cell, at: spawn.position,
+                contributors: Set(groups.flatMap { $0 } + squares.flatMap { $0 }).intersection(clearResult.cleared),
+                delay: materialDuration)
+        }
+        worldEffects.finishObjectives(objectiveBefore, events: presentationEvents, delay: timing.delay)
 
-        run(.wait(forDuration: 0.18)) { [weak self] in
-            guard let self else { return }
+        scheduleBoardResolution(after: materialDuration + (specialSpawn == nil ? 0 : 0.10)) { scene in
             if clearResult.cleared.isEmpty {
-                self.finishCascadeTurn()
+                scene.finishCascadeTurn()
             } else {
-                self.applyCollapseAndRefill()
+                scene.applyCollapseAndRefill()
             }
         }
     }
@@ -775,7 +672,7 @@ extension GameScene {
                 rebuildAllNodes()
                 animateBoardMechanicsTick()
                 gamePhase = .falling
-                run(.wait(forDuration: 0.16)) { [weak self] in self?.applyCollapseAndRefill() }
+                scheduleBoardResolution(after: 0.16) { $0.applyCollapseAndRefill() }
                 return
             }
         }
@@ -801,6 +698,7 @@ extension GameScene {
         preferredSpecialSpawnPositions.removeAll()
         dropMercySpecialIfStruggling()
         isResolving = false
+        worldEffects.present([.boardSettled])
         if turnConsumesMove {
             Analytics.track("turn_combo_summary",
                             properties: ["level": "\(levelNumber)",

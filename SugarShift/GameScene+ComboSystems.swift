@@ -584,14 +584,17 @@ extension GameScene {
     }
 
     func addingObjectiveFishTargets(to matches: Set<Pos>, in sourceGrid: Grid? = nil) -> Set<Pos> {
+        matches.union(objectiveFishDestinations(for: matches, in: sourceGrid).values)
+    }
+
+    func objectiveFishDestinations(for matches: Set<Pos>, in sourceGrid: Grid? = nil) -> [Pos: Pos] {
         let source = sourceGrid ?? grid
-        let fishCount = matches.reduce(into: 0) { count, p in
-            if source[p.r][p.c]?.special == .fish { count += 1 }
+        let origins = matches.filter { source[$0.r][$0.c]?.special == .fish }.sorted {
+            $0.r == $1.r ? $0.c < $1.c : $0.r < $1.r
         }
-        guard fishCount > 0 else { return matches }
-        var expanded = matches
-        expanded.formUnion(fishTargets(count: fishCount, excluding: matches))
-        return expanded
+        guard !origins.isEmpty else { return [:] }
+        let targets = TacticalMoveEvaluator.rankedTargets(in: source, config: levelConfig, excluding: matches)
+        return Dictionary(uniqueKeysWithValues: zip(origins, targets.prefix(origins.count)))
     }
 
     func specialComboAffectedPositions(kind: SpecialComboKind,
@@ -881,97 +884,6 @@ extension GameScene {
     func soundPan(at point: CGPoint) -> Float {
         guard size.width > 0 else { return 0 }
         return Float(max(-1, min(1, point.x / (size.width * 0.44))))
-    }
-
-    /// Incidental specials inside a normal cascade still need to explain their
-    /// footprint. This is intentionally lighter than a two-special combo, but it
-    /// preserves direction and material identity.
-    func playTriggeredSpecialEffects(preClear: [Pos: Cell]) {
-        let triggered = preClear.compactMap { position, cell -> (Pos, Special)? in
-            cell.special.map { (position, $0) }
-        }.sorted {
-            if $0.0.r != $1.0.r { return $0.0.r < $1.0.r }
-            return $0.0.c < $1.0.c
-        }
-        guard !triggered.isEmpty else { return }
-
-        let fishDestinations = fishTargets(count: triggered.filter { $0.1 == .fish }.count,
-                                           excluding: Set(preClear.keys))
-        var fishIndex = 0
-        var playedKinds = Set<Special>()
-        for (index, item) in triggered.enumerated() {
-            let position = item.0
-            let special = item.1
-            let origin = point(forRow: position.r, col: position.c)
-            let delay = TimeInterval(index) * 0.025
-            let tint = UIColor(hex: preClear[position]?.color ?? "#FFFFFF")
-
-            switch special {
-            case .stripedRow:
-                let effect = Effects.makeEnergySweep(
-                    from: point(forRow: position.r, col: 0),
-                    to: point(forRow: position.r, col: cols - 1),
-                    tint: tint,
-                    width: 10,
-                    delay: delay)
-                worldNode.addChild(effect)
-            case .stripedCol:
-                let effect = Effects.makeEnergySweep(
-                    from: point(forRow: rows - 1, col: position.c),
-                    to: point(forRow: 0, col: position.c),
-                    tint: tint,
-                    width: 10,
-                    delay: delay)
-                worldNode.addChild(effect)
-            case .wrapped:
-                run(.sequence([
-                    .wait(forDuration: delay),
-                    .run { [weak self] in
-                        guard let self else { return }
-                        let first = Effects.makeBombBlast(at: origin)
-                        first.setScale(0.70)
-                        self.worldNode.addChild(first)
-                    },
-                    .wait(forDuration: 0.09),
-                    .run { [weak self] in
-                        guard let self else { return }
-                        let second = Effects.makeBombBlast(at: origin)
-                        second.setScale(0.96)
-                        self.worldNode.addChild(second)
-                    }
-                ]))
-            case .bomb, .lineBlast, .rocket, .ufo:
-                run(.sequence([
-                    .wait(forDuration: delay),
-                    .run { [weak self] in
-                        self?.worldNode.addChild(Effects.makeBombBlast(at: origin))
-                    }
-                ]))
-            case .colorBomb:
-                flashScreenTint(UIColor(hex: "#A78BFA").withAlphaComponent(0.15),
-                                duration: 0.28)
-                worldNode.addChild(Effects.makeBombBlast(at: origin))
-            case .fish:
-                if fishIndex < fishDestinations.count {
-                    let target = fishDestinations[fishIndex]
-                    fishIndex += 1
-                    worldNode.addChild(Effects.makeFishFlight(
-                        from: origin,
-                        to: point(forRow: target.r, col: target.c),
-                        tint: tint,
-                        delay: delay))
-                }
-            }
-
-            guard playedKinds.insert(special).inserted else { continue }
-            switch special {
-            case .stripedRow, .stripedCol: Audio.shared.play(.stripe, pan: soundPan(at: origin))
-            case .wrapped: Audio.shared.play(.wrapped, pan: soundPan(at: origin))
-            case .colorBomb: Audio.shared.play(.colorCharge, pan: soundPan(at: origin))
-            case .bomb, .lineBlast, .rocket, .ufo: Audio.shared.play(.bomb, pan: soundPan(at: origin))
-            case .fish: Audio.shared.play(.fish, pan: soundPan(at: origin))
-            }
-        }
     }
 
     func specialComboPresentation(for kind: SpecialComboKind) -> (String, UIColor) {

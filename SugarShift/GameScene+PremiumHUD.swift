@@ -76,19 +76,24 @@ extension GameScene {
         card.name = "levelCard"
         card.position = CGPoint(x: 0, y: layout.levelCard.midY)
         card.zPosition = 50
-        card.addChild(GameplayHUDArt.card(size: layout.levelCard.size, ice: ice, theme: worldTheme))
+        let background = SKNode()
+        background.name = "levelCardBackground"
+        background.zPosition = -1
+        background.alpha = CGFloat(1 - Persistence.levelCardTransparency)
+        background.addChild(GameplayHUDArt.card(size: layout.levelCard.size, ice: ice, theme: worldTheme))
+        card.addChild(background)
         if ice {
             for (x, width) in [(-w * 0.29, w * 0.43), (w * 0.31, w * 0.37)] {
                 let cap = WorldHUDDecoration.snowCap(size: CGSize(width: width, height: 28 * s))
                 cap.position = CGPoint(x: x, y: layout.levelCard.height / 2 - 4 * s)
                 cap.zPosition = 1
-                card.addChild(cap)
+                background.addChild(cap)
             }
         } else {
             let icing = GameplayHUDArt.icing(size: CGSize(width: w * 0.39, height: 49 * s), ice: false, color: worldTheme.cardPalette.trim)
             icing.position = CGPoint(x: -w * 0.305 + 3 * s, y: layout.levelCard.height / 2 - 22 * s)
             icing.zPosition = 1
-            card.addChild(icing)
+            background.addChild(icing)
         }
         addChild(card)
         headerCard = card
@@ -123,7 +128,7 @@ extension GameScene {
         strip.position = CGPoint(x: left + goalW / 2 - 2 * s, y: -10 * s)
         strip.fillColor = UIColor.white.withAlphaComponent(0.30)
         strip.strokeColor = .clear
-        card.addChild(strip)
+        background.addChild(strip)
         let objectives = displayedHUDObjectives
         let count = max(1, objectives.count)
         let itemW = goalW / CGFloat(count)
@@ -159,10 +164,15 @@ extension GameScene {
         divider.position = CGPoint(x: dividerX, y: 14 * s)
         divider.fillColor = UIColor(hex: ice ? "#6EC3EA" : "#E5A395").withAlphaComponent(0.6)
         divider.strokeColor = .clear
-        card.addChild(divider)
-        let moves = GameplayHUDArt.card(size: CGSize(width: 89 * s, height: 82 * s), ice: ice, inset: true, theme: worldTheme)
+        background.addChild(divider)
+        let moves = SKNode()
         moves.name = "movesInset"
         moves.position = CGPoint(x: w / 2 - 55 * s, y: 17 * s)
+        let movesBackground = GameplayHUDArt.card(size: CGSize(width: 89 * s, height: 82 * s), ice: ice, inset: true, theme: worldTheme)
+        movesBackground.name = "movesBackground"
+        movesBackground.zPosition = -1
+        movesBackground.alpha = CGFloat(1 - Persistence.levelCardTransparency)
+        moves.addChild(movesBackground)
         card.addChild(moves)
         let movesInk = UIColor(hex: ice ? "#152274" : "#340B4F")
         let movesCap = GameSurface.label(String(localized: "Moves"), size: 13 * s, color: movesInk)
@@ -209,10 +219,10 @@ extension GameScene {
             glint.fillColor = UIColor.white.withAlphaComponent(0.85)
             glint.strokeColor = .clear
             glint.position = CGPoint(x: x, y: y)
-            card.addChild(glint)
+            background.addChild(glint)
             let cross = glint.copy() as! SKShapeNode
             cross.zRotation = .pi / 2
-            card.addChild(cross)
+            background.addChild(cross)
         }
     }
 

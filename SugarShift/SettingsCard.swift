@@ -14,6 +14,7 @@ final class SettingsCard: SKNode {
         case firebaseSignOut
         case shapedBoardChanged(Bool)
         case visualAccessibilityChanged
+        case gameplayAppearanceChanged
         case showCombos
     }
 
@@ -23,6 +24,9 @@ final class SettingsCard: SKNode {
     private let showsCombos: Bool
     private var rows: [(key: String, row: SKShapeNode, pill: SKShapeNode, knob: SKShapeNode, isOn: Bool)] = []
     private var actionRows: [(key: String, row: SKShapeNode, enabled: Bool)] = []
+    private var transparencySliders: [SettingsTransparencySlider] = []
+    private weak var pendingTransparencySlider: SettingsTransparencySlider?
+    private var isDraggingTransparency = false
     private var scrollCrop: SKCropNode?
     private var scrollContent: SKNode?
     private var scrollTrack: SKShapeNode?
@@ -179,6 +183,14 @@ final class SettingsCard: SKNode {
                      title: String(localized: "Haptics"), emoji: "📳",
                      initialOn: Persistence.hapticsEnabled, atY: y)
         y -= 56
+        for surface in SettingsTransparencySlider.Surface.allCases {
+            let slider = SettingsTransparencySlider(surface: surface, width: cardSize.width - 32)
+            slider.position = CGPoint(x: 0, y: y - (SettingsTransparencySlider.rowHeight - rowHeight) / 2)
+            slider.onChange = { [weak self] in self?.onAction?(.gameplayAppearanceChanged) }
+            content.addChild(slider)
+            transparencySliders.append(slider)
+            y -= SettingsTransparencySlider.rowHeight + 8
+        }
         addToggleRow(card: content, key: "reduceMotion",
                      title: String(localized: "Reduce motion"), emoji: "🌀",
                      initialOn: Persistence.reduceMotion, atY: y)
@@ -217,6 +229,7 @@ final class SettingsCard: SKNode {
 
         let totalRows = rows.count + actionRows.count
         let contentHeight = topScrollInset + rowHeight + CGFloat(max(0, totalRows - 1)) * rowStep
+            + CGFloat(transparencySliders.count) * (SettingsTransparencySlider.rowHeight + 8)
             + promiseHeight + 16 + bottomScrollInset
         maxScrollOffset = max(0, contentHeight - viewportHeight)
 
@@ -550,8 +563,13 @@ final class SettingsCard: SKNode {
         lastDragTime = timestamp
         scrollVelocity = 0
         didDragScroll = false
+        pendingTransparencySlider = nil
+        isDraggingTransparency = false
 
         let local = self.convert(scenePoint, from: self.parent ?? self)
+        if isPointInScrollViewport(local), !isPointNearScrollIndicator(local) {
+            pendingTransparencySlider = transparencySlider(at: scenePoint)
+        }
         isTrackingScroll = maxScrollOffset > 0 && isPointInScrollViewport(local)
         if isTrackingScroll {
             scrollDragMode = isPointNearScrollIndicator(local) ? .indicator : .content
@@ -561,6 +579,18 @@ final class SettingsCard: SKNode {
     }
 
     func handleTouchMoved(at scenePoint: CGPoint, timestamp: TimeInterval = 0) -> Bool {
+        if let slider = pendingTransparencySlider, !didDragScroll {
+            let dx = abs(scenePoint.x - dragStartPoint.x)
+            let dy = abs(scenePoint.y - dragStartPoint.y)
+            if isDraggingTransparency || (dx > 5 && dx > dy) {
+                isDraggingTransparency = true
+                isTrackingScroll = false
+                highlightScroller(active: false)
+                slider.adjust(at: slider.convert(scenePoint, from: parent ?? self))
+                return true
+            }
+            if dy > 5 { pendingTransparencySlider = nil }
+        }
         guard isTrackingScroll else { return true }
 
         let dy = scenePoint.y - lastDragPoint.y
@@ -593,7 +623,14 @@ final class SettingsCard: SKNode {
         defer {
             hasActiveTouch = false
             isTrackingScroll = false
+            pendingTransparencySlider = nil
+            isDraggingTransparency = false
             highlightScroller(active: false)
+        }
+
+        if let slider = pendingTransparencySlider, !didDragScroll {
+            slider.adjust(at: slider.convert(scenePoint, from: parent ?? self))
+            return true
         }
 
         if didDragScroll {
@@ -614,6 +651,8 @@ final class SettingsCard: SKNode {
         isTrackingScroll = false
         didDragScroll = false
         scrollVelocity = 0
+        pendingTransparencySlider = nil
+        isDraggingTransparency = false
         settleScroll()
         highlightScroller(active: false)
     }
@@ -626,6 +665,10 @@ final class SettingsCard: SKNode {
         }
 
         if isPointInScrollViewport(local), let content = scrollContent {
+            if let slider = transparencySlider(at: scenePoint) {
+                slider.adjust(at: slider.convert(scenePoint, from: parent ?? self))
+                return
+            }
             let contentPoint = content.convert(scenePoint, from: self.parent ?? self)
             for row in actionRows where row.row.contains(contentPoint) {
                 guard row.enabled else { return }
@@ -674,6 +717,12 @@ final class SettingsCard: SKNode {
 
     private func isPointInsideCard(_ point: CGPoint) -> Bool {
         abs(point.x) <= cardSize.width / 2 && abs(point.y) <= cardSize.height / 2
+    }
+
+    private func transparencySlider(at scenePoint: CGPoint) -> SettingsTransparencySlider? {
+        transparencySliders.first { slider in
+            slider.acceptsTouch(at: slider.convert(scenePoint, from: parent ?? self))
+        }
     }
 
     private func isPointInScrollViewport(_ point: CGPoint) -> Bool {

@@ -44,185 +44,118 @@ enum Effects {
 
     // MARK: - Score popup
 
-    /// Floating "+30" that drifts up and fades. Call once per cleared cluster.
+    /// One exact earned value in outlined, floating type. The optional delay
+    /// lets the caller align feedback with an authoritative special impact.
     static func showScorePopup(_ amount: Int,
                                at point: CGPoint,
                                in scene: SKScene,
-                               color: UIColor = .white) {
-        let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        label.text = "+\(amount)"
-        label.fontSize = amount >= 100 ? 30 : 26
-        label.fontColor = color
-        label.position = point
-        label.zPosition = 800
-        label.setScale(0.4)
-        scene.addChild(label)
-
-        let pop = SKAction.group([
-            .scale(to: 1.25, duration: 0.18),
-            .fadeAlpha(to: 1.0, duration: 0.1)
-        ])
-        let drift = SKAction.group([
-            .move(by: CGVector(dx: 0, dy: 70), duration: 0.7),
-            .scale(to: 1.0, duration: 0.7),
-            .sequence([.wait(forDuration: 0.45), .fadeOut(withDuration: 0.25)])
-        ])
-        label.run(.sequence([pop, drift, .removeFromParent()]))
+                               color _: UIColor = .white,
+                               delay: TimeInterval = 0,
+                               maxVisible: Int = 2) {
+        guard amount > 0 else { return }
+        let parent = SignatureMotion.feedbackParent(in: scene)
+        let frame = SignatureMotion.feedbackFrame(in: scene)
+        let siblings = parent.children.filter { $0.name == "ss.scoreFeedback" }
+        let limit = min(4, max(1, maxVisible))
+        if siblings.count >= limit { siblings.prefix(siblings.count - limit + 1).forEach { $0.removeFromParent() } }
+        let root = SKNode()
+        root.name = "ss.scoreFeedback"
+        root.zPosition = 805
+        root.alpha = 0
+        let text = "+\(amount.formatted())"
+        let fontSize: CGFloat = amount >= 100 ? 25 : 22
+        let font = UIFont(name: "AvenirNext-Heavy", size: fontSize) ?? UIFont.boldSystemFont(ofSize: fontSize)
+        let lettering = SKNode()
+        func makeLabel(fill: UIColor, stroke: UIColor, strokeWidth: Double) -> SKLabelNode {
+            let label = SKLabelNode()
+            label.attributedText = NSAttributedString(string: text, attributes: [
+                .font: font, .foregroundColor: fill,
+                .strokeColor: stroke, .strokeWidth: strokeWidth
+            ])
+            label.verticalAlignmentMode = .center
+            label.horizontalAlignmentMode = .center
+            return label
+        }
+        let depth = makeLabel(fill: UIColor(hex: "#8B4418"), stroke: UIColor(hex: "#8B4418"), strokeWidth: -9)
+        depth.position = CGPoint(x: 1, y: -2)
+        lettering.addChild(depth)
+        let face = makeLabel(fill: UIColor(hex: "#FFF8E8"), stroke: UIColor(hex: "#F4A52A"), strokeWidth: -6)
+        face.zPosition = 1
+        lettering.addChild(face)
+        root.addChild(lettering)
+        let textWidth = lettering.calculateAccumulatedFrame().width + 8
+        let width = min(frame.width, max(62, textWidth + 16))
+        if textWidth > width - 16 { lettering.setScale(max(1, width - 16) / textWidth) }
+        let lift: CGFloat = SignatureMotion.isReduced ? 0 : 24
+        var y = min(frame.maxY - 20 - lift, max(frame.minY + 20, point.y + 12))
+        if siblings.last.map({ abs($0.position.y - y) < 32 && abs($0.position.x - point.x) < 64 }) == true {
+            y = min(frame.maxY - 20 - lift, y + 36)
+        }
+        root.position = CGPoint(x: min(frame.maxX - width / 2, max(frame.minX + width / 2, point.x)), y: y)
+        parent.addChild(root)
+        let entrance: SKAction
+        let exit: SKAction
+        if SignatureMotion.isReduced {
+            entrance = .fadeIn(withDuration: 0.10)
+            exit = .fadeOut(withDuration: 0.20)
+        } else {
+            root.setScale(0.84)
+            entrance = .group([.fadeIn(withDuration: 0.08), .sequence([
+                .scale(to: 1.06, duration: 0.12), .scale(to: 1, duration: 0.08)
+            ])])
+            exit = .group([.moveBy(x: 0, y: lift, duration: 0.28), .fadeOut(withDuration: 0.28)])
+        }
+        root.run(.sequence([.wait(forDuration: max(0, delay)), entrance,
+            .wait(forDuration: 0.40), exit, .removeFromParent()]))
     }
 
-    // MARK: - Combo banner
+    // MARK: - Combo praise
 
-    /// Mid-screen cinematic banner — radial wedge starburst, big text with
-    /// outline, sparkle ring around it. Auto-removes.
-    static func showComboBanner(text: String,
-                                color: UIColor,
-                                in scene: SKScene) {
-        let container = SKNode()
-        container.zPosition = 900
-        container.alpha = 0
-        container.setScale(0.3)
-        let majorKeywords = ["BOARD", "SMASH", "CROWN", "SUGAR", "UNREAL", "MEGA", "RAINBOW", "SUPER"]
-        let isMajor = majorKeywords.contains { text.localizedCaseInsensitiveContains($0) }
-        let burstRadius: CGFloat = isMajor ? 210 : 145
+    /// Brief text in the existing space above the board. No panel, particles,
+    /// board overlap, shake or extra input delay accompanies routine praise.
+    static func showComboBanner(text: String, color: UIColor, in scene: SKScene) {
+        guard !text.isEmpty else { return }
+        scene.childNode(withName: "ss.comboPraise")?.removeFromParent()
+        SignatureMotion.feedbackParent(in: scene).childNode(withName: "ss.comboPraise")?.removeFromParent()
 
-        // Radial starburst wedges behind the text
-        let wedgeCount = 12
-        for i in 0..<wedgeCount {
-            let theta = CGFloat(i) * (.pi * 2 / CGFloat(wedgeCount))
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: 0, y: 0))
-            path.addLine(to: CGPoint(x: cos(theta - 0.10) * burstRadius,
-                                       y: sin(theta - 0.10) * burstRadius))
-            path.addLine(to: CGPoint(x: cos(theta + 0.10) * burstRadius,
-                                       y: sin(theta + 0.10) * burstRadius))
-            path.close()
-            let wedge = SKShapeNode(path: path.cgPath)
-            wedge.fillColor = (i % 2 == 0)
-                ? color.withAlphaComponent(isMajor ? 0.28 : 0.17)
-                : UIColor.white.withAlphaComponent(isMajor ? 0.16 : 0.09)
-            wedge.strokeColor = .clear
-            wedge.blendMode = .add
-            wedge.zPosition = -2
-            container.addChild(wedge)
+        let lane: CGRect
+        if let game = scene as? GameScene {
+            let layout = game.gameplayLayout
+            let bottom = layout.board.maxY + 1
+            let top = layout.levelCard.minY - 1
+            lane = CGRect(x: layout.board.minX + 6, y: bottom,
+                          width: max(1, layout.board.width - 12), height: max(0, top - bottom))
+        } else {
+            let frame = SignatureMotion.feedbackFrame(in: scene)
+            lane = CGRect(x: frame.minX, y: frame.maxY - 22, width: frame.width, height: 20)
         }
-        // Slowly spin the wedges so the banner looks alive
-        if let wedgeParent = container.children.first?.parent {
-            wedgeParent.run(.repeatForever(.rotate(byAngle: .pi / 2, duration: 4)))
-        }
-
-        // Soft glow halo
-        let halo = SKShapeNode(circleOfRadius: isMajor ? 90 : 66)
-        halo.fillColor = color.withAlphaComponent(isMajor ? 0.35 : 0.22)
-        halo.strokeColor = .clear
-        halo.glowWidth = 16
-        halo.blendMode = .add
-        halo.zPosition = -1
-        container.addChild(halo)
-
-        let maxFont: CGFloat = isMajor ? 56 : 44
-        let bannerFontSize = min(maxFont, max(CGFloat(30), 560 / CGFloat(max(6, text.count))))
-
-        // Drop shadow text
-        let shadow = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        shadow.text = text
-        shadow.fontSize = bannerFontSize
-        shadow.fontColor = UIColor(white: 0, alpha: 0.55)
-        shadow.horizontalAlignmentMode = .center
-        shadow.verticalAlignmentMode = .center
-        shadow.position = CGPoint(x: 3, y: -4)
-        container.addChild(shadow)
-
-        // White outline (offset stamps for a thick stroke effect)
-        for off: (CGFloat, CGFloat) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
-            let outline = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-            outline.text = text
-            outline.fontSize = bannerFontSize
-            outline.fontColor = .white
-            outline.horizontalAlignmentMode = .center
-            outline.verticalAlignmentMode = .center
-            outline.position = CGPoint(x: off.0, y: off.1)
-            container.addChild(outline)
-        }
-
-        // Main coloured text on top
-        let main = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        main.text = text
-        main.fontSize = bannerFontSize
-        main.fontColor = color
-        main.horizontalAlignmentMode = .center
-        main.verticalAlignmentMode = .center
-        container.addChild(main)
-
-        // Sparkles flying outward from the banner
-        for _ in 0..<(isMajor ? 14 : 8) {
-            let s = CGFloat.random(in: 6...11)
-            let star = SKShapeNode(path: smashStarPath(size: s).cgPath)
-            star.fillColor = .white
-            star.strokeColor = color.withAlphaComponent(0.7)
-            star.lineWidth = 0.6
-            star.glowWidth = 4
-            star.blendMode = .add
-            star.zPosition = 1
-            star.alpha = 0
-            container.addChild(star)
-
-            let angle = CGFloat.random(in: 0...(.pi * 2))
-            let speed = CGFloat.random(in: 110...210)
-            star.run(.sequence([
-                .wait(forDuration: 0.10),
-                .group([
-                    .fadeAlpha(to: 1.0, duration: 0.1),
-                    .move(by: CGVector(dx: cos(angle) * speed,
-                                        dy: sin(angle) * speed),
-                          duration: 0.7),
-                    .sequence([.scale(to: 1.4, duration: 0.35),
-                               .scale(to: 0.2, duration: 0.35)]),
-                    .sequence([.wait(forDuration: 0.4),
-                               .fadeOut(withDuration: 0.3)])
-                ]),
-                .removeFromParent()
-            ]))
-        }
-
-        scene.addChild(container)
-
-        // Soft screen flash — gentler than a true strobe, and skipped entirely
-        // for users who've enabled Reduce Motion so it can't trigger photosensitive
-        // reactions. Slow ramp-up + ramp-down stays well under WCAG 2.1's three
-        // flashes-per-second guidance.
-        if !Persistence.reduceMotion {
-            let flash = SKShapeNode(rectOf: scene.size)
-            flash.fillColor = .white
-            flash.strokeColor = .clear
-            flash.alpha = 0
-            flash.zPosition = 880
-            scene.addChild(flash)
-            flash.run(.sequence([
-                .fadeAlpha(to: isMajor ? 0.14 : 0.07, duration: 0.12),
-                .fadeOut(withDuration: 0.32),
-                .removeFromParent()
-            ]))
-        }
-
-        let inAnim = SKAction.group([
-            .scale(to: 1.18, duration: 0.20),
-            .fadeIn(withDuration: 0.14)
+        guard lane.height >= 11 else { return }
+        let root = SKNode()
+        root.name = "ss.comboPraise"
+        root.zPosition = 90
+        root.position = CGPoint(x: lane.midX, y: lane.midY)
+        root.alpha = 0
+        let font = UIFont(name: "AvenirNext-DemiBold", size: 14) ?? UIFont.boldSystemFont(ofSize: 14)
+        let label = SKLabelNode()
+        label.attributedText = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: color.lighter(by: 0.50),
+            .strokeColor: UIColor(hex: "#291D3D").withAlphaComponent(0.85),
+            .strokeWidth: -3.0
         ])
-        let settle = SKAction.scale(to: 1.0, duration: 0.12)
-        let hold = SKAction.wait(forDuration: isMajor ? 0.50 : 0.32)
-        let out = SKAction.group([
-            .scale(to: 1.5, duration: 0.32),
-            .fadeOut(withDuration: 0.32),
-            .moveBy(x: 0, y: 24, duration: 0.32)
-        ])
-        container.run(.sequence([inAnim, settle, hold, out, .removeFromParent()]))
-
-        // Subtle wiggle while held — gives the text "weight"
-        main.run(.repeat(.sequence([
-            .rotate(byAngle:  0.05, duration: 0.07),
-            .rotate(byAngle: -0.10, duration: 0.13),
-            .rotate(byAngle:  0.05, duration: 0.07)
-        ]), count: 3))
+        label.horizontalAlignmentMode = .center
+        label.verticalAlignmentMode = .center
+        label.numberOfLines = 1
+        root.addChild(label)
+        let bounds = label.calculateAccumulatedFrame()
+        let fit = min(1, lane.width / max(1, bounds.width), lane.height / max(1, bounds.height))
+        // On cramped layouts, omit praise instead of shrinking into unreadable
+        // text or borrowing space from the fruit, objective card or footer.
+        guard 14 * fit >= 10.5 else { return }
+        root.setScale(fit)
+        scene.addChild(root)
+        root.run(.sequence([.fadeIn(withDuration: 0.08), .wait(forDuration: 0.42),
+                            .fadeOut(withDuration: 0.16), .removeFromParent()]))
     }
 
     // MARK: - Tile burst (small particle pop on each cleared tile)
@@ -230,26 +163,30 @@ enum Effects {
     /// Programmatic particle emitter — no .sks file needed. Caller positions it.
     static func makeTileBurst(tint: UIColor, count: Int = 14) -> SKEmitterNode {
         let emitter = SKEmitterNode()
-        emitter.particleTexture = makeCirclePixel(diameter: 8, color: .white)
+        let budget = SignatureMotion.isReduced ? 0 : min(18, max(0, count))
+        // SpriteKit interprets numParticlesToEmit == 0 as unlimited, so a
+        // disabled emitter needs a zero birth rate and a nonzero finite cap.
+        emitter.particleTexture = WorldComboArtwork.material("honey")
         emitter.particleColor = tint
         emitter.particleColorBlendFactor = 1.0
-        emitter.numParticlesToEmit = max(3, count)
-        emitter.particleBirthRate = 600
-        emitter.particleLifetime = 0.55
-        emitter.particleLifetimeRange = 0.2
+        emitter.numParticlesToEmit = max(1, budget)
+        emitter.particleBirthRate = budget == 0 ? 0 : 360
+        emitter.particleLifetime = 0.34
+        emitter.particleLifetimeRange = 0.10
         emitter.emissionAngle = 0
         emitter.emissionAngleRange = .pi * 2
-        emitter.particleSpeed = 180
-        emitter.particleSpeedRange = 80
+        emitter.particleSpeed = 110
+        emitter.particleSpeedRange = 55
         emitter.particleAlpha = 1.0
         emitter.particleAlphaRange = 0.2
-        emitter.particleAlphaSpeed = -1.6
-        emitter.particleScale = 0.7
-        emitter.particleScaleRange = 0.35
-        emitter.particleScaleSpeed = -1.2
+        emitter.particleAlphaSpeed = -2.2
+        emitter.particleScale = 0.20
+        emitter.particleScaleRange = 0.07
+        emitter.particleScaleSpeed = -0.4
         emitter.yAcceleration = -180
         emitter.zPosition = 700
         emitter.targetNode = nil
+        SignatureMotion.remove(emitter, after: 0.62)
         return emitter
     }
 
@@ -259,7 +196,11 @@ enum Effects {
     /// `count` and `size` scale up for higher-impact moments.
     static func makeShardBurst(tint: UIColor, count: Int = 8, size: CGFloat = 18) -> SKNode {
         let container = SKNode()
-        for _ in 0..<count {
+        guard !SignatureMotion.isReduced, count > 0 else {
+            SignatureMotion.remove(container, after: 0.01)
+            return container
+        }
+        for _ in 0..<min(10, count) {
             let shardSize = CGFloat.random(in: size * 0.45 ... size)
             let path = makeShardPath(size: shardSize)
             let shard = SKShapeNode(path: path.cgPath)
@@ -272,8 +213,7 @@ enum Effects {
             container.addChild(shard)
 
             shard.zRotation = CGFloat.random(in: 0...(.pi * 2))
-            shard.run(.repeatForever(.rotate(byAngle: CGFloat.random(in: -2.6...2.6),
-                                              duration: 0.6)))
+            shard.run(.rotate(byAngle: CGFloat.random(in: -2.6...2.6), duration: 0.7))
 
             let angle = CGFloat.random(in: 0...(.pi * 2))
             let speed = CGFloat.random(in: 90...170)
@@ -293,6 +233,7 @@ enum Effects {
                 .removeFromParent()
             ]))
         }
+        SignatureMotion.remove(container, after: 0.9)
         return container
     }
 
@@ -305,6 +246,11 @@ enum Effects {
                                        count: Int = 5,
                                        size: CGFloat = 18,
                                        gravity: CGFloat = -390) -> SKNode {
+        guard !SignatureMotion.isReduced, count > 0 else {
+            let empty = SKNode()
+            SignatureMotion.remove(empty, after: 0.01)
+            return empty
+        }
         guard let texture else {
             return makeShardBurst(tint: tint, count: count, size: size)
         }
@@ -322,7 +268,7 @@ enum Effects {
                               height: 1 / CGFloat(rows))
             let fragmentTexture = SKTexture(rect: rect, in: texture)
             let fragment = SKSpriteNode(texture: fragmentTexture)
-            let fragmentScale = CGFloat.random(in: 0.78...1.12)
+            let fragmentScale = 0.82 + CGFloat(index % 3) * 0.11
             fragment.size = CGSize(width: size * fragmentScale,
                                    height: size * fragmentScale)
             fragment.color = tint
@@ -330,32 +276,29 @@ enum Effects {
             fragment.position = CGPoint(x: (CGFloat(column) - 1) * size * 0.45,
                                         y: (CGFloat(row) - 0.5) * size * 0.45)
             fragment.zPosition = 738
-            fragment.zRotation = CGFloat.random(in: -0.25...0.25)
+            fragment.zRotation = CGFloat(index % 3 - 1) * 0.18
             container.addChild(fragment)
 
-            let angle = CGFloat.random(in: 0.18...(.pi - 0.18))
-            let speed = CGFloat.random(in: 135...235)
+            let angle = CGFloat.pi * (0.16 + CGFloat(index) / CGFloat(max(1, pieceCount - 1)) * 0.68)
+            let speed = 120 + CGFloat(index % 3) * 27
             let vx = cos(angle) * speed
             let vy = sin(angle) * speed
-            let spin = CGFloat.random(in: -8...8)
-            let duration = TimeInterval.random(in: 0.48...0.74)
+            let spin = CGFloat(index % 2 == 0 ? 5 : -5)
+            let duration = 0.42 + Double(index % 3) * 0.055
             let start = fragment.position
-            var previousElapsed: CGFloat = 0
             fragment.run(.sequence([
                 .customAction(withDuration: duration) { node, elapsed in
                     let t = CGFloat(elapsed)
-                    let dt = max(0, t - previousElapsed)
-                    previousElapsed = t
                     node.position = CGPoint(x: start.x + vx * t,
                                             y: start.y + vy * t + 0.5 * gravity * t * t)
-                    node.zRotation += spin * dt
-                    node.alpha = max(0, 1 - t / CGFloat(duration))
+                    node.zRotation = spin * t
+                    node.alpha = min(1, max(0, (1 - t / CGFloat(duration)) * 1.7))
                     node.setScale(max(0.30, 1 - t / CGFloat(duration) * 0.58))
                 },
                 .removeFromParent()
             ]))
         }
-        container.run(.sequence([.wait(forDuration: 0.85), .removeFromParent()]))
+        container.run(.sequence([.wait(forDuration: 0.60), .removeFromParent()]))
         return container
     }
 
@@ -366,7 +309,11 @@ enum Effects {
                                size: CGFloat = 16,
                                gravity: CGFloat = -360) -> SKNode {
         let container = SKNode()
-        for _ in 0..<count {
+        guard !SignatureMotion.isReduced, count > 0 else {
+            SignatureMotion.remove(container, after: 0.01)
+            return container
+        }
+        for _ in 0..<min(10, count) {
             let chunkSize = CGFloat.random(in: size * 0.45...size)
             let chunk = SKShapeNode(path: makeShardPath(size: chunkSize).cgPath)
             chunk.fillColor = tint
@@ -407,7 +354,10 @@ enum Effects {
     /// Pass `big = true` for chunky 4+ clears or combo cascades.
     /// Intensity is automatically reduced when the player enables Reduce Motion.
     static func makeImpactFlash(at point: CGPoint, big: Bool = false) -> SKNode {
-        let reduce = Persistence.reduceMotion
+        if SignatureMotion.isReduced {
+            return SignatureMotion.quietMark(at: point, tint: UIColor(hex: "#FFE3AA"), radius: big ? 22 : 14)
+        }
+        let reduce = false
         let node = SKNode()
         node.position = point
         node.zPosition = 720
@@ -465,7 +415,11 @@ enum Effects {
     /// White star sparkles flying outward — the "candy magic" feel.
     static func makeStarSparkle(count: Int = 8) -> SKNode {
         let container = SKNode()
-        for _ in 0..<count {
+        guard !SignatureMotion.isReduced, count > 0 else {
+            SignatureMotion.remove(container, after: 0.01)
+            return container
+        }
+        for _ in 0..<min(12, count) {
             let s = CGFloat.random(in: 7...13)
             let star = SKShapeNode(path: smashStarPath(size: s).cgPath)
             star.fillColor = .white
@@ -482,7 +436,7 @@ enum Effects {
             let dur = TimeInterval.random(in: 0.55...0.85)
 
             star.zRotation = CGFloat.random(in: 0...(.pi * 2))
-            star.run(.repeatForever(.rotate(byAngle: 6, duration: 0.8)))
+            star.run(.rotate(byAngle: 3, duration: 0.85))
             star.run(.sequence([
                 .group([
                     .move(by: CGVector(dx: cos(angle) * speed,
@@ -500,80 +454,11 @@ enum Effects {
         return container
     }
 
-    // MARK: - Column beam (Candy Crush "striped candy" feel)
+    // MARK: - Lane sweep
 
-    /// Pink/cream vertical beam light + falling sparkles, evoking a striped-candy
-    /// vertical clear effect. Auto-removes itself.
-    static func makeColumnBeam(x: CGFloat,
-                                fromY: CGFloat,
-                                toY: CGFloat,
-                                tint: UIColor) -> SKNode {
-        let node = SKNode()
-        node.zPosition = 730
-
-        let height = toY - fromY
-        // Soft pastel beam with rounded ends
-        let beam = SKShapeNode(rectOf: CGSize(width: 36, height: height),
-                                cornerRadius: 18)
-        beam.fillColor = tint.withAlphaComponent(0.55)
-        beam.strokeColor = .white
-        beam.lineWidth = 1.5
-        beam.glowWidth = 14
-        beam.blendMode = .add
-        beam.position = CGPoint(x: x, y: (fromY + toY) / 2)
-        beam.alpha = 0.0
-        beam.xScale = 0.2
-        node.addChild(beam)
-
-        beam.run(.sequence([
-            .group([.fadeAlpha(to: 1.0, duration: 0.06),
-                    .scaleX(to: 1.0, duration: 0.06)]),
-            .wait(forDuration: 0.18),
-            .group([.fadeOut(withDuration: 0.32),
-                    .scaleX(to: 0.4, duration: 0.32)])
-        ]))
-
-        // White core line through the centre for an extra-bright streak
-        let core = SKShapeNode(rectOf: CGSize(width: 8, height: height),
-                                cornerRadius: 4)
-        core.fillColor = UIColor.white.withAlphaComponent(0.85)
-        core.strokeColor = .clear
-        core.glowWidth = 6
-        core.blendMode = .add
-        core.position = beam.position
-        core.alpha = 0.0
-        node.addChild(core)
-        core.run(.sequence([
-            .fadeAlpha(to: 1.0, duration: 0.08),
-            .wait(forDuration: 0.12),
-            .fadeOut(withDuration: 0.24)
-        ]))
-
-        // Cascading sparkles trailing along the beam
-        let count = 18
-        for _ in 0..<count {
-            let dot = SKShapeNode(circleOfRadius: CGFloat.random(in: 1.6...3.4))
-            dot.fillColor = .white
-            dot.strokeColor = .clear
-            dot.glowWidth = 3
-            dot.blendMode = .add
-            dot.position = CGPoint(x: x + CGFloat.random(in: -22...22),
-                                    y: CGFloat.random(in: fromY...toY))
-            dot.alpha = 0.0
-            node.addChild(dot)
-            let life = TimeInterval.random(in: 0.4...0.8)
-            dot.run(.sequence([
-                .wait(forDuration: TimeInterval.random(in: 0...0.18)),
-                .group([.fadeAlpha(to: 1.0, duration: life * 0.3),
-                        .moveBy(x: CGFloat.random(in: -10...10),
-                                y: CGFloat.random(in: -40...40), duration: life)]),
-                .fadeOut(withDuration: life * 0.4),
-                .removeFromParent()
-            ]))
-        }
-
-        node.run(.sequence([.wait(forDuration: 1.2), .removeFromParent()]))
-        return node
+    static func makeColumnBeam(x: CGFloat, fromY: CGFloat, toY: CGFloat,
+                               tint: UIColor) -> SKNode {
+        makeEnergySweep(from: CGPoint(x: x, y: fromY), to: CGPoint(x: x, y: toY), tint: tint, width: 12)
     }
 
     /// A directional streak with a travelling impact head. Unlike the old
@@ -584,14 +469,18 @@ enum Effects {
                                 tint: UIColor,
                                 width: CGFloat = 12,
                                 delay: TimeInterval = 0) -> SKNode {
+        if SignatureMotion.isReduced {
+            return SignatureMotion.quietMark(at: end, tint: tint, delay: delay)
+        }
         let node = SKNode()
         node.zPosition = 748
         node.alpha = 0
 
         let dx = end.x - start.x
         let dy = end.y - start.y
-        let length = hypot(dx, dy)
+        let length = max(1, hypot(dx, dy))
         let angle = atan2(dy, dx)
+        let width = min(22, max(2, width))
         let beam = SKShapeNode(rectOf: CGSize(width: length, height: width),
                                cornerRadius: width / 2)
         beam.fillColor = tint.withAlphaComponent(0.58)
@@ -636,9 +525,12 @@ enum Effects {
                                to end: CGPoint,
                                tint: UIColor,
                                delay: TimeInterval = 0) -> SKNode {
+        if SignatureMotion.isReduced {
+            return SignatureMotion.quietMark(at: end, tint: tint, delay: delay)
+        }
         let node = SKNode()
         node.zPosition = 770
-        let fish = Icons.sprite("fish.fill", size: 30, weight: .heavy, tint: tint)
+        let fish = GameArt.boardSprite("special_fish", fitting: CGSize(width: 34, height: 26))
         fish.position = start
         fish.alpha = 0
         fish.setScale(0.72)
@@ -654,7 +546,7 @@ enum Effects {
             .wait(forDuration: delay),
             .fadeIn(withDuration: 0.04),
             .group([
-                .follow(path.cgPath, asOffset: false, orientToPath: true, duration: duration),
+                .follow(path.cgPath, asOffset: false, orientToPath: false, duration: duration),
                 .sequence([.scale(to: 1.05, duration: duration * 0.55),
                            .scale(to: 0.72, duration: duration * 0.45)])
             ]),
@@ -680,6 +572,9 @@ enum Effects {
     static func makeLightningBolt(angle: CGFloat,
                                     length: CGFloat,
                                     tint: UIColor = UIColor(hex: "#FACC15")) -> SKNode {
+        if SignatureMotion.isReduced {
+            return SignatureMotion.quietMark(tint: tint, radius: 12)
+        }
         let node = SKNode()
 
         let path = UIBezierPath()
@@ -721,30 +616,17 @@ enum Effects {
         bolt.fillColor = .clear
         node.addChild(bolt)
 
-        // Gentler flicker (down to 2 cycles at slower rate so we stay below
-        // the photosensitive 3-flashes-per-second threshold) then fade out.
-        // Reduce Motion skips the flicker entirely.
-        if Persistence.reduceMotion {
-            node.run(.sequence([
-                .fadeOut(withDuration: 0.35),
-                .removeFromParent()
-            ]))
-        } else {
-            node.run(.sequence([
-                .repeat(.sequence([
-                    .fadeAlpha(to: 0.55, duration: 0.10),
-                    .fadeAlpha(to: 1.0, duration: 0.10)
-                ]), count: 2),
-                .fadeOut(withDuration: 0.28),
-                .removeFromParent()
-            ]))
-        }
+        // One continuous decay keeps this readable without a strobing loop.
+        node.run(.sequence([.wait(forDuration: 0.06), .fadeOut(withDuration: 0.30), .removeFromParent()]))
         return node
     }
 
     /// Big yellow/orange explosion ring + white shockwave at point. Pairs with
     /// the lightning bolts for the bomb-detonation showpiece.
     static func makeBombBlast(at point: CGPoint) -> SKNode {
+        if SignatureMotion.isReduced {
+            return SignatureMotion.quietMark(at: point, tint: UIColor(hex: "#FFC66B"), radius: 24)
+        }
         let node = SKNode()
         node.position = point
         node.zPosition = 760
@@ -808,9 +690,10 @@ enum Effects {
         emitter.particleTexture = makeCirclePixel(diameter: 6, color: .white)
         emitter.particleColor = tint
         emitter.particleColorBlendFactor = 1.0
-        emitter.particleBirthRate = 70
-        emitter.particleLifetime = 0.5
-        emitter.particleLifetimeRange = 0.2
+        emitter.particleBirthRate = SignatureMotion.isReduced ? 0 : 28
+        emitter.numParticlesToEmit = 12
+        emitter.particleLifetime = 0.24
+        emitter.particleLifetimeRange = 0.06
         emitter.emissionAngle = .pi / 2          // upward (so they linger above)
         emitter.emissionAngleRange = .pi / 6
         emitter.particleSpeed = 30
@@ -822,6 +705,7 @@ enum Effects {
         emitter.particleScaleSpeed = -1.0
         emitter.zPosition = 6
         emitter.targetNode = nil
+        SignatureMotion.remove(emitter, after: 0.85)
         return emitter
     }
 
@@ -863,17 +747,17 @@ enum Effects {
         emitter.particleTexture = makeRectPixel(size: CGSize(width: 8, height: 14), color: .white)
         emitter.particleColorSequence = nil
         emitter.particleColorBlendFactor = 1.0
-        emitter.particleBirthRate = 170
-        emitter.numParticlesToEmit = 90
-        emitter.particleLifetime = 2.4
-        emitter.particleLifetimeRange = 0.6
+        emitter.particleBirthRate = SignatureMotion.isReduced ? 0 : 100
+        emitter.numParticlesToEmit = 48
+        emitter.particleLifetime = 1.1
+        emitter.particleLifetimeRange = 0.2
         emitter.emissionAngle = -.pi / 2
         emitter.emissionAngleRange = .pi / 5
         emitter.particleSpeed = 360
         emitter.particleSpeedRange = 160
         emitter.particlePositionRange = CGVector(dx: width, dy: 4)
         emitter.particleAlpha = 1.0
-        emitter.particleAlphaSpeed = -0.25
+        emitter.particleAlphaSpeed = -0.8
         emitter.particleScale = 0.9
         emitter.particleScaleRange = 0.4
         emitter.particleRotation = 0
@@ -892,6 +776,7 @@ enum Effects {
             UIColor(hex: "#34D399"),
             UIColor(hex: "#F97316")
         ], times: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        SignatureMotion.remove(emitter, after: 1.9)
         return emitter
     }
 
@@ -902,7 +787,7 @@ enum Effects {
         // position as its new origin. Keep one cancellable shake per board.
         let originalPos = (node.userData?["ss.shakeOrigin"] as? NSValue)?.cgPointValue ?? node.position
         cancelShake(node)
-        guard !Persistence.reduceMotion, !UIAccessibility.isReduceMotionEnabled else { return }
+        guard !SignatureMotion.isReduced else { return }
         if node.userData == nil { node.userData = NSMutableDictionary() }
         node.userData?["ss.shakeOrigin"] = NSValue(cgPoint: originalPos)
         var actions: [SKAction] = []

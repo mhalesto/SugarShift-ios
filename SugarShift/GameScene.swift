@@ -338,6 +338,7 @@ final class GameScene: SKScene {
 
     // Container for shake (we move this instead of self.position)
     var worldNode: SKNode!
+    lazy var worldEffects = WorldEffectAnimator(scene: self)
 
     // HUD nodes
     var headerCard: SKShapeNode!
@@ -416,11 +417,13 @@ final class GameScene: SKScene {
         super.didChangeSize(oldSize)
         guard size.width > 0, !grid.isEmpty else { return }
         clearPlayerSmashPreview()
+        worldEffects.reset(cancelResolution: false)
         rebuildChapterBackdrop()
         rebuildHUD()
         layoutBoard()
         rebuildAllNodes()
         rebuildSyrupBand()
+        worldEffects.present([.boardSettled])
     }
 
     func rebuildChapterBackdrop() {
@@ -693,7 +696,7 @@ final class GameScene: SKScene {
         run(.sequence([
             .wait(forDuration: duration),
             .run { [weak self] in self?.worldNode.speed = 1.0 }
-        ]))
+        ]), withKey: "boardTimeDilation")
     }
 
     // MARK: - Syrup line (rising pressure mechanic)
@@ -880,6 +883,7 @@ final class GameScene: SKScene {
                 nodes[r][c] = nil
             }
         }
+        worldEffects.reset()
         grid = snapshot.grid
         score = snapshot.score
         movesLeft = snapshot.movesLeft
@@ -1087,10 +1091,12 @@ final class GameScene: SKScene {
                 ring.glowWidth = 4
                 ring.position = point(forRow: pos.r, col: pos.c)
                 layer.addChild(ring)
-                ring.run(.repeatForever(.sequence([
-                    .scale(to: 1.10, duration: 0.8),
-                    .scale(to: 1.0, duration: 0.8)
-                ])))
+                if !SignatureMotion.isReduced {
+                    ring.run(.repeatForever(.sequence([
+                        .scale(to: 1.10, duration: 0.8),
+                        .scale(to: 1.0, duration: 0.8)
+                    ])))
+                }
             }
         }
 
@@ -1108,6 +1114,7 @@ final class GameScene: SKScene {
     func buildShapeMat() {
         let mat = SKNode()
         mat.name = "boardBackdrop"
+        mat.alpha = CGFloat(1 - Persistence.boardTransparency)
         mat.zPosition = -12
         mat.position = CGPoint(x: gameplayLayout.board.midX, y: gameplayLayout.board.midY)
         var transform = CGAffineTransform(translationX: -mat.position.x, y: -mat.position.y)
@@ -1134,6 +1141,7 @@ final class GameScene: SKScene {
         guard rows > 1, cols > 1 else { return }
         let layer = SKNode()
         layer.name = "tileCornerFillers"
+        layer.alpha = CGFloat(1 - Persistence.boardTransparency)
         layer.zPosition = -1
         let mask = levelConfig.layout.mask
         let fill = Persistence.highContrast ? UIColor.white : skin.tileBorder
@@ -1192,6 +1200,9 @@ final class GameScene: SKScene {
     // MARK: - Game lifecycle
 
     func startNewGame() {
+        worldEffects.reset()
+        worldNode?.speed = 1
+        removeAction(forKey: "boardTimeDilation")
         worldNode?.childNode(withName: "worldComboPresentation")?.removeFromParent()
         if let worldNode { Effects.cancelShake(worldNode) }
         gamePhase = .loading
@@ -1314,6 +1325,7 @@ final class GameScene: SKScene {
         }
         scheduleIdleHint()
         gamePhase = .waitingForInput
+        worldEffects.present([.boardSettled])
     }
 
     func openingMoveQualityTarget() -> Int {

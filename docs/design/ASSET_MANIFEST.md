@@ -1,5 +1,9 @@
 # Sugar Shift asset manifest
 
+## September 7 material-animation integration
+
+The world-motion/story continuation reuses the existing original world art, special art and sounds. Its shared particle textures and family portraits are procedural native assets; no new raster image was generated or downloaded. Optional future artwork and runtime acceptance gaps are tracked in [the delivery note](WORLD_ANIMATION_STORY_DELIVERY.md). The new animation mockups did not change UI, board geometry or the protected footer.
+
 ## Level-card follow-up — September 6
 
 The [level-card correction](LEVEL_CARD_CORRECTION.md) adds the Ice Age environment (`world_ice_background`, 853×1844 JPEG, original master retained) and revises the cached card/icing/stars/booster surfaces. Ice levels 16–30 now use their own background; seven other environment fallbacks remain. Legacy fixed-blocker objectives display their actual per-type counts and visible art. Missing lock/cage/crate textures use metal/wood braces drawn in code. The earlier ledger below describes the preceding checkpoint.

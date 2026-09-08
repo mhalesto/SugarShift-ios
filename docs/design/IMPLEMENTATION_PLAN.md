@@ -1,5 +1,9 @@
 # Sugar Shift redesign implementation plan
 
+## September 7 world-motion/story checkpoint — build 11
+
+Continued the interrupted material/event and story files; connected real clears, objective flights, special creation, combo stages and portal transfers. Added the working opening/replay and avatar save foundation. All brown praise panels were replaced with small text above the board, omitted where space is insufficient. Fixed the reported set/array assignment errors and raised all eight target configurations to build 11. **No builds, tests requiring compilation, simulators or screenshots were run by this pass**, following the latest user instruction. Source checks and remaining user QA are recorded in [the current delivery note](WORLD_ANIMATION_STORY_DELIVERY.md). The footer and gameplay geometry remain protected.
+
 ## Established baseline
 
 Branch `codex-gameplay-pass`, baseline `9af2022`. Existing user edit: `SugarShift/Localizable.xcstrings`, preserved. Baseline simulator unit tests and campaign/Tower reports pass (`/tmp/sugarshift-redesign.GWqXVF/Baseline.xcresult`). Audit found mature Engine, level factory/simulator, tactical hints, specials, shaped masks, economy/cloud/missions/Tower. No application changes existed at continuation.

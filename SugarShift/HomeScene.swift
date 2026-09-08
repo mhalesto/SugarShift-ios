@@ -7,11 +7,14 @@ import UIKit
 final class HomeScene: SKScene {
 
     var onPlay: (() -> Void)?
+    var onOpeningFinished: (() -> Void)?
 
     private let fruits = ["🍊", "🍇", "🫐", "🍏", "🍌", "🍒", "🍓", "🥭"]
 
     private var hasSetup = false
     private var settingsCard: SettingsCard?
+    private var storyCard: StorySceneCard?
+    private var enteringCampaign = false
 
     // MARK: - Lifecycle
 
@@ -36,6 +39,7 @@ final class HomeScene: SKScene {
         buildLogo()
         buildPlayButton()
         buildSettingsButton()
+        buildStoryReplayButton()
         buildAmbientSparkles()
     }
 
@@ -355,6 +359,49 @@ final class HomeScene: SKScene {
         gear.accessibilityTraits = .button
     }
 
+    private func buildStoryReplayButton() {
+        let button = HomeStoryButton(rectOf: CGSize(width: 164, height: 44), cornerRadius: 22)
+        button.name = "storyReplay"
+        button.zPosition = 51
+        button.position = CGPoint(x: 0, y: (childNode(withName: "playBtn")?.position.y ?? 0) - 82)
+        MenuStyle.decorate(button, size: CGSize(width: 164, height: 44), tone: .cream)
+        button.addChild(GameSurface.label(String(localized: "The memory box"), size: 15, color: MenuStyle.ink))
+        button.isAccessibilityElement = true
+        button.accessibilityTraits = .button
+        button.accessibilityLabel = String(localized: "Replay the opening story")
+        button.onActivate = { [weak self] in
+            guard let self, self.settingsCard == nil, !self.enteringCampaign, self.storyCard == nil else { return }
+            self.presentStory(StoryStore.shared.replayOpening(), entersCampaign: false)
+        }
+        addChild(button)
+    }
+
+    private func beginCampaignWithStory() {
+        guard storyCard == nil else { return }
+        if let opening = StoryStore.shared.openingPresentation(
+            highestUnlockedLevel: Persistence.highestUnlockedLevel,
+            hasCompletedAnyLevel: CampaignProgress.isCompleted(level: 1)) {
+            presentStory(opening, entersCampaign: true)
+        } else {
+            enteringCampaign = false
+            onPlay?()
+        }
+    }
+
+    private func presentStory(_ presentation: StoryPresentation, entersCampaign: Bool) {
+        guard storyCard == nil else { return }
+        let card = StorySceneCard(presentation: presentation, sceneSize: size,
+                                  safeAreaInsets: view?.safeAreaInsets ?? .zero)
+        storyCard = card
+        addChild(card)
+        card.onComplete = { [weak self] in
+            guard let self else { return }
+            self.storyCard = nil
+            self.enteringCampaign = false
+            if entersCampaign { (self.onOpeningFinished ?? self.onPlay)?() }
+        }
+    }
+
     // MARK: - Touch handling
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -371,6 +418,11 @@ final class HomeScene: SKScene {
         guard let t = touches.first else { return }
         let p = t.location(in: self)
 
+        if let storyCard {
+            storyCard.handleTap(at: p)
+            return
+        }
+        guard !enteringCampaign else { return }
         // If the settings card is up, it consumes taps first.
         if let card = settingsCard {
             _ = card.handleTouchEnded(at: p, timestamp: t.timestamp)
@@ -382,7 +434,12 @@ final class HomeScene: SKScene {
             if cur.name == "playBtn" {
                 bounce(cur)
                 run(.sequence([.wait(forDuration: 0.16),
-                               .run { [weak self] in self?.onPlay?() }]))
+                               .run { [weak self] in self?.beginCampaignWithStory() }]))
+                enteringCampaign = true
+                return
+            }
+            if cur.name == "storyReplay" {
+                presentStory(StoryStore.shared.replayOpening(), entersCampaign: false)
                 return
             }
             if cur.name == "settingsBtn" {
@@ -426,6 +483,8 @@ final class HomeScene: SKScene {
             case .shapedBoardChanged:
                 break
             case .visualAccessibilityChanged:
+                break
+            case .gameplayAppearanceChanged:
                 break
             case .showCombos:
                 break
@@ -629,5 +688,14 @@ final class HomeScene: SKScene {
         ])))
 
         return node
+    }
+}
+
+private final class HomeStoryButton: SKShapeNode {
+    var onActivate: (() -> Void)?
+    override func accessibilityActivate() -> Bool {
+        guard let onActivate else { return false }
+        onActivate()
+        return true
     }
 }

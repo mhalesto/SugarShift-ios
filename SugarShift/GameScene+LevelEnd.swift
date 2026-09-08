@@ -228,11 +228,8 @@ extension GameScene {
         for (i, p) in planted.enumerated() {
             grid[p.r][p.c]?.special = specials[i % specials.count]
             refreshNode(at: p)
-            nodes[p.r][p.c]?.run(.sequence([
-                .wait(forDuration: 0.05 * Double(i)),
-                .scale(to: 1.25, duration: 0.10),
-                .scale(to: 1.0, duration: 0.12)
-            ]))
+            worldEffects.present([.specialCreated(at: p, special: specials[i % specials.count])],
+                sources: nodes[p.r][p.c].map { [p: $0] } ?? [:], delay: { _ in 0.04 * Double(i) })
         }
         Effects.showComboBanner(text: String(localized: "SUGAR CRUSH!"),
                                 color: UIColor(hex: "#F472B6"), in: self)
@@ -246,24 +243,15 @@ extension GameScene {
             let clearResult = Engine.clearMatches(&self.grid, matches: affected)
             let points = clearResult.affectedCount * 120
             self.score += points
-            for q in clearResult.cleared {
-                guard let n = self.nodes[q.r][q.c] else { continue }
-                let burst = Effects.makeTileBurst(tint: UIColor(hex: (n.userData?["color"] as? String) ?? "#FFFFFF"))
-                burst.position = n.position
-                self.worldNode.addChild(burst)
-                burst.run(.sequence([.wait(forDuration: 0.6), .removeFromParent()]))
-                n.run(.sequence([.group([.scale(to: 1.5, duration: 0.12),
-                                         .fadeOut(withDuration: 0.18)]),
-                                 .removeFromParent()]))
-                self.nodes[q.r][q.c] = nil
-            }
+            let timing = CascadePresentationTiming(events: clearResult.presentationEvents, matched: plantedSet)
+            let duration = self.presentResolvedClear(clearResult, delay: timing.delay)
             Effects.showScorePopup(points,
                                    at: CGPoint(x: 0, y: self.size.height * 0.18),
                                    in: self, color: UIColor(hex: "#FBBF24"))
-            Effects.shake(self.worldNode, intensity: 14, duration: 0.4)
+            Effects.shake(self.worldNode, intensity: 6, duration: 0.30)
             Effects.haptic(.heavy)
             Audio.shared.play(.bomb)
-            self.run(.wait(forDuration: 0.7)) { completion() }
+            self.scheduleBoardResolution(after: max(0.7, duration)) { _ in completion() }
         }
     }
 
@@ -523,6 +511,8 @@ extension GameScene {
 
     override func willMove(from view: SKView) {
         super.willMove(from: view)
+        worldEffects.reset()
+        if let worldNode { Effects.cancelShake(worldNode) }
         if let storeKitDeliveryObserver {
             NotificationCenter.default.removeObserver(storeKitDeliveryObserver)
             self.storeKitDeliveryObserver = nil

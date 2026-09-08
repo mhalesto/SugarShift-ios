@@ -40,6 +40,8 @@ extension GameScene {
             case .visualAccessibilityChanged:
                 self.rebuildHUD()
                 self.rebuildAllNodes()
+            case .gameplayAppearanceChanged:
+                self.applyGameplayTransparency()
             case .showCombos:
                 self.settingsCard?.dismiss { [weak self] in
                     self?.settingsCard = nil
@@ -633,229 +635,44 @@ extension GameScene {
 
     func showLevelTesterOverlay() {
         #if DEBUG
-        guard canAcceptBoardInput else { return }
+        guard canAcceptBoardInput, let controller = testerPresentingController,
+              controller.viewIfLoaded?.window != nil,
+              !controller.isBeingPresented, !controller.isBeingDismissed else { return }
+        cancelIdleHint()
         cancelBoosterMode()
         deselect()
-        levelTesterOverlay?.removeFromParent()
 
-        let stats = Analytics.levelStats(for: levelNumber)
-        let attempts = stats["attempts"] ?? 0
-        let wins = stats["wins"] ?? 0
-        let winRate = attempts > 0
-            ? Double(wins) / Double(max(1, attempts))
-            : LevelBalanceAnalyzer.estimatedWinRate(for: levelConfig)
-        let avgStars = wins > 0
-            ? Double(stats["stars_total"] ?? 0) / Double(max(1, wins))
-            : LevelBalanceAnalyzer.estimatedAverageStars(for: levelConfig)
-        let avgMoves = wins > 0
-            ? Double(stats["moves_left_total"] ?? 0) / Double(max(1, wins))
-            : Double(levelConfig.moves) * 0.22
-        let label = LevelBalanceAnalyzer.balanceLabel(winRate: winRate, averageStars: avgStars)
-        let snapshot = LevelBalanceAnalyzer.snapshot(for: levelConfig)
-
-        let overlay = SKNode()
-        overlay.zPosition = 1400
-
-        let scrim = SKShapeNode(rectOf: size)
-        scrim.fillColor = UIColor(white: 0, alpha: 0.42)
-        scrim.strokeColor = .clear
-        scrim.name = "testerClose"
-        overlay.addChild(scrim)
-
-        let cardW = min(size.width - 36, 340)
-        let cardH: CGFloat = 440
-        let card = SKShapeNode(rectOf: CGSize(width: cardW, height: cardH), cornerRadius: 20)
-        card.fillColor = UIColor(white: 1, alpha: 0.98)
-        card.strokeColor = UIColor(hex: "#CBD5E1")
-        card.lineWidth = 1
-        card.position = CGPoint(x: 0, y: 10)
-        overlay.addChild(card)
-
-        func addLabel(_ text: String,
-                      x: CGFloat,
-                      y: CGFloat,
-                      size: CGFloat,
-                      color: UIColor,
-                      align: SKLabelHorizontalAlignmentMode = .left,
-                      weight: String = "AvenirNext-DemiBold") {
-            let l = SKLabelNode(fontNamed: weight)
-            l.text = text
-            l.fontSize = size
-            l.fontColor = color
-            l.verticalAlignmentMode = .center
-            l.horizontalAlignmentMode = align
-            l.position = CGPoint(x: x, y: y)
-            card.addChild(l)
+        // Keep the existing scene input gate active through the UIKit dismissal.
+        // The native sheet is the only visible tester; there is no second card.
+        let blocker = SKNode()
+        blocker.name = "levelExplorerInputGuard"
+        addChild(blocker)
+        levelTesterOverlay = blocker
+        let explorer = LevelExplorerViewController(config: levelConfig, openingSeed: levelAttemptSeed)
+        explorer.onDismiss = { [weak self, weak blocker] in
+            guard let self, let blocker, self.levelTesterOverlay === blocker else { return }
+            blocker.removeFromParent()
+            self.levelTesterOverlay = nil
         }
-
-        let left = -cardW / 2 + 22
-        let right = cardW / 2 - 22
-        let top = cardH / 2
-        addLabel(String(localized: "Level Tester"), x: left, y: top - 28, size: 20,
-                 color: UIColor(hex: "#0F172A"), weight: "AvenirNext-Heavy")
-        addLabel("Level \(levelNumber)", x: right, y: top - 28, size: 13,
-                 color: UIColor(hex: "#64748B"), align: .right)
-
-        let statusColor: UIColor = {
-            switch label {
-            case "Too hard": return UIColor(hex: "#EF4444")
-            case "Too easy": return UIColor(hex: "#F59E0B")
-            default: return UIColor(hex: "#10B981")
-            }
-        }()
-        let status = makePill(width: 106, height: 28,
-                              fill: statusColor.withAlphaComponent(0.16),
-                              stroke: statusColor.withAlphaComponent(0.55))
-        status.position = CGPoint(x: 0, y: top - 68)
-        card.addChild(status)
-        addLabel(label, x: 0, y: top - 68, size: 13,
-                 color: statusColor, align: .center, weight: "AvenirNext-Heavy")
-
-        let source = attempts > 0 ? String(localized: "\(attempts) played attempts") : String(localized: "catalog estimate")
-        let percent = Int((winRate * 100).rounded())
-        let rows: [(String, String)] = [
-            (String(localized: "Win rate"), String(localized: "\(percent)%  \(source)")),
-            (String(localized: "Average stars"), String(format: "%.1f", avgStars)),
-            (String(localized: "Avg moves left"), String(format: "%.1f", avgMoves)),
-            (levelConfig.goal == .score ? "Capacity" : "Stars",
-             levelConfig.goal == .score
-                ? "\(snapshot.estimatedScoreCapacity) vs \(levelConfig.target)"
-                : LevelScoring.previewSummary(for: levelConfig)),
-            ("Goal", levelConfig.goal.title)
-        ]
-        var y = top - 108
-        for row in rows {
-            addLabel(row.0, x: left, y: y, size: 12, color: UIColor(hex: "#64748B"))
-            addLabel(row.1, x: right, y: y, size: 12, color: UIColor(hex: "#0F172A"), align: .right,
-                     weight: "AvenirNext-Heavy")
-            y -= 28
+        explorer.onSelect = { [weak self] level, seed in
+            guard let self, (1...Levels.count).contains(level), !self.isResolving,
+                  self.gamePhase.acceptsBoardInput else { return }
+            if let seed { self.debugReplaySeed = seed }
+            self.jumpToTesterLevel(level)
         }
-
-        let warningText = snapshot.warnings.isEmpty ? String(localized: "No balance warnings") : snapshot.warnings.joined(separator: ", ")
-        addLabel(warningText, x: 0, y: -cardH / 2 + 102, size: 10.5,
-                 color: snapshot.warnings.isEmpty ? UIColor(hex: "#10B981") : UIColor(hex: "#B45309"),
-                 align: .center)
-
-        let jump = testerButton(title: "Jump to level…", name: "testerJump",
-                                fill: UIColor(hex: "#FCE7F3"), textColor: UIColor(hex: "#9D174D"), width: 260)
-        jump.position = CGPoint(x: 0, y: -cardH / 2 + 178)
-        card.addChild(jump)
-        let world = testerButton(title: "Choose world…", name: "testerWorld",
-                                 fill: UIColor(hex: "#E0F2FE"), textColor: UIColor(hex: "#075985"), width: 260)
-        world.position = CGPoint(x: 0, y: -cardH / 2 + 138)
-        card.addChild(world)
-
-        let replay = testerButton(title: String(localized: "Replay seed…"), name: "testerReplaySeed",
-                                  fill: UIColor(hex: "#FEF3C7"),
-                                  textColor: UIColor(hex: "#92400E"),
-                                  width: 200)
-        replay.position = CGPoint(x: 0, y: -cardH / 2 + 74)
-        card.addChild(replay)
-
-        let prev = testerButton(title: String(localized: "Prev"), name: levelNumber > 1 ? "testerPrev" : "testerDisabled",
-                                fill: levelNumber > 1 ? UIColor(hex: "#E0F2FE") : UIColor(white: 0, alpha: 0.06),
-                                textColor: levelNumber > 1 ? UIColor(hex: "#0369A1") : UIColor(hex: "#94A3B8"),
-                                width: 82)
-        prev.position = CGPoint(x: -94, y: -cardH / 2 + 36)
-        card.addChild(prev)
-
-        let close = testerButton(title: String(localized: "Close"), name: "testerClose",
-                                 fill: UIColor(hex: "#F1F5F9"),
-                                 textColor: UIColor(hex: "#334155"),
-                                 width: 82)
-        close.position = CGPoint(x: 0, y: -cardH / 2 + 36)
-        card.addChild(close)
-
-        let next = testerButton(title: String(localized: "Next"), name: levelNumber < Levels.count ? "testerNext" : "testerDisabled",
-                                fill: levelNumber < Levels.count ? UIColor(hex: "#DCFCE7") : UIColor(white: 0, alpha: 0.06),
-                                textColor: levelNumber < Levels.count ? UIColor(hex: "#047857") : UIColor(hex: "#94A3B8"),
-                                width: 82)
-        next.position = CGPoint(x: 94, y: -cardH / 2 + 36)
-        card.addChild(next)
-
-        addChild(overlay)
-        overlay.alpha = 0
-        overlay.run(.fadeIn(withDuration: 0.14))
-        levelTesterOverlay = overlay
+        controller.present(explorer, animated: !UIAccessibility.isReduceMotionEnabled)
         #endif
     }
 
-    func testerButton(title: String,
-                              name: String,
-                              fill: UIColor,
-                              textColor: UIColor,
-                              width: CGFloat) -> SKShapeNode {
-        let button = SKShapeNode(rectOf: CGSize(width: width, height: 34), cornerRadius: 17)
-        button.fillColor = fill
-        button.strokeColor = .clear
-        button.name = name
-
-        let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-        label.text = title
-        label.fontSize = 13
-        label.fontColor = textColor
-        label.verticalAlignmentMode = .center
-        label.horizontalAlignmentMode = .center
-        label.name = name
-        button.addChild(label)
-        return button
+    func handleLevelTesterTap(at _: CGPoint) {
+        // GameScene+Touch consumes scene touches while the native sheet or its
+        // dismissal is active. Every tester action is handled in UIKit.
     }
 
-    func handleLevelTesterTap(at point: CGPoint) {
-        guard let overlay = levelTesterOverlay else { return }
-        let local = overlay.convert(point, from: self)
-        var hit: SKNode? = overlay.atPoint(local)
-        while let node = hit {
-            switch node.name {
-            case "testerPrev":
-                jumpToTesterLevel(levelNumber - 1)
-                return
-            case "testerNext":
-                jumpToTesterLevel(levelNumber + 1)
-                return
-            case "testerReplaySeed":
-                promptForReplaySeed()
-                return
-            case "testerJump":
-                promptForTesterLevel()
-                return
-            case "testerWorld":
-                promptForTesterWorld()
-                return
-            case "testerClose":
-                overlay.run(.sequence([.fadeOut(withDuration: 0.12), .removeFromParent()]))
-                levelTesterOverlay = nil
-                return
-            case "testerDisabled":
-                Effects.haptic(.soft)
-                return
-            default:
-                hit = node.parent
-            }
-        }
-    }
-
-    /// Debug-only: paste a `seed` value from `level_start` analytics to
-    /// relaunch this level with that exact opening board.
+    /// Debug-only: replay the current level with an opening seed from analytics.
     func promptForReplaySeed() {
         #if DEBUG
-        guard let controller = view?.window?.rootViewController else { return }
-        let alert = UIAlertController(title: "Replay seed",
-                                      message: "Paste the seed from level_start analytics. Current: \(levelAttemptSeed)",
-                                      preferredStyle: .alert)
-        alert.addTextField { field in
-            field.placeholder = "\(self.levelAttemptSeed)"
-            field.keyboardType = .numberPad
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Replay", style: .default) { [weak self, weak alert] _ in
-            guard let self,
-                  let text = alert?.textFields?.first?.text,
-                  let seed = UInt64(text.trimmingCharacters(in: .whitespaces)) else { return }
-            self.debugReplaySeed = seed
-            self.jumpToTesterLevel(self.levelNumber)
-        })
-        controller.present(alert, animated: true)
+        (testerPresentingController as? LevelExplorerViewController)?.showSeedReplay()
         #endif
     }
 
@@ -863,6 +680,7 @@ extension GameScene {
         #if DEBUG
         guard (1...Levels.count).contains(level), !isResolving,
               gamePhase.acceptsBoardInput else { return }
+        LevelExplorerViewController.recordVisit(level)
         levelTesterOverlay?.removeFromParent()
         levelTesterOverlay = nil
         endLevelCard?.dismiss()
@@ -889,37 +707,13 @@ extension GameScene {
 
     func promptForTesterLevel() {
         #if DEBUG
-        guard levelTesterOverlay != nil, let controller = testerPresentingController else { return }
-        let alert = UIAlertController(title: "Jump to level", message: "Choose 1–\(Levels.count). Jumping does not charge a life or unlock skipped levels. Completing a level still saves normal progress.", preferredStyle: .alert)
-        alert.addTextField { field in
-            field.keyboardType = .numberPad
-            field.placeholder = "1–\(Levels.count)"
-            field.text = "\(self.levelNumber)"
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Play", style: .default) { [weak self, weak alert] _ in
-            guard let self, let text = alert?.textFields?.first?.text,
-                  let level = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  (1...Levels.count).contains(level) else { return }
-            self.jumpToTesterLevel(level)
-        })
-        controller.present(alert, animated: true)
+        (testerPresentingController as? LevelExplorerViewController)?.focusLevelEntry()
         #endif
     }
 
     func promptForTesterWorld() {
         #if DEBUG
-        guard levelTesterOverlay != nil, let controller = testerPresentingController else { return }
-        let sheet = UIAlertController(title: "Test a world", message: "Jump to its first campaign level. Unfinished worlds currently reuse Candy Valley artwork.", preferredStyle: .actionSheet)
-        for theme in WorldThemes.all {
-            sheet.addAction(UIAlertAction(title: "\(theme.displayName) · \(theme.levels.lowerBound)–\(theme.levels.upperBound)", style: .default) { [weak self] _ in
-                self?.jumpToTesterLevel(theme.levels.lowerBound)
-            })
-        }
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        sheet.popoverPresentationController?.sourceView = controller.view
-        sheet.popoverPresentationController?.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
-        controller.present(sheet, animated: true)
+        (testerPresentingController as? LevelExplorerViewController)?.showWorlds()
         #endif
     }
 
@@ -942,6 +736,7 @@ extension GameScene {
     }
 
     func applyCollapseAndRefill() {
+        let objectiveBefore = worldEffects.beginObjectives()
         gamePhase = .falling
         let oldGrid = grid
         let idToNode = nodeIdMap(in: oldGrid)
@@ -953,13 +748,16 @@ extension GameScene {
                 }
             }
         }
-        var newGrid = Engine.collapseAndRefill(grid,
+        let refill = Engine.collapseAndRefillResult(grid,
                                                    colors: palette,
                                                    mask: levelConfig.layout.mask,
                                                    cascadeBoost: currentCascadeBoost,
                                                    portals: levelConfig.layout.portalPairs,
                                                    spawnWeights: levelConfig.spawnWeights,
                                                    rng: &gameplayRNG)
+        var newGrid = refill.grid
+        var transfers = refill.portalTransfers
+        var refillEvents = refill.presentationEvents
         var collectedDropNodeIDs = Set<String>()
 
         // Ingredient rescue: any baskets that have settled to the bottom of
@@ -1001,6 +799,7 @@ extension GameScene {
             }
             if !openedByKeys.isEmpty {
                 openedChests += openedByKeys.count
+                objectiveTracker.consume(.blockerDestroyed(type: .chest, count: openedByKeys.count))
                 awardChestRewards(opened: openedByKeys)
             }
             for p in collectedKeyPositions {
@@ -1033,11 +832,28 @@ extension GameScene {
             ]))
         }
         if !collectedPositions.isEmpty || !collectedKeyPositions.isEmpty {
-            newGrid = Engine.collapseAndRefill(newGrid, colors: palette,
+            let nextRefill = Engine.collapseAndRefillResult(newGrid, colors: palette,
                 mask: levelConfig.layout.mask, portals: levelConfig.layout.portalPairs,
                 spawnWeights: levelConfig.spawnWeights, rng: &gameplayRNG)
+            newGrid = nextRefill.grid
+            transfers += nextRefill.portalTransfers
+            refillEvents += nextRefill.presentationEvents
         }
         grid = newGrid
+        var objectiveSources: [Int: [Pos]] = [:]
+        func presentationOrder(_ a: Pos, _ b: Pos) -> Bool {
+            a.r == b.r ? a.c < b.c : a.r < b.r
+        }
+        for (index, objective) in displayedHUDObjectives.enumerated() {
+            switch objective {
+            case .collectIngredients: objectiveSources[index] = collectedPositions.sorted(by: presentationOrder)
+            case .collectKeys: objectiveSources[index] = collectedKeyPositions.sorted(by: presentationOrder)
+            case .destroySpecificBlocker(.chest, _): objectiveSources[index] = openedByKeys.sorted(by: presentationOrder)
+            default: break
+            }
+        }
+        worldEffects.finishObjectives(objectiveBefore, events: refillEvents, collected: objectiveSources)
+        if !transfers.isEmpty { Audio.shared.play(.portal) }
         if !levelConfig.layout.portalPairs.isEmpty || !levelConfig.layout.conveyorBelts.isEmpty {
             Analytics.track("board_mechanic_tick",
                             properties: ["level": "\(levelNumber)",
@@ -1058,22 +874,8 @@ extension GameScene {
             return min(0.36, base + Double(max(1, distance)) * perRow) / cascadeSpeed
         }
 
-        func landingAction(to destination: CGPoint,
-                           duration: TimeInterval,
-                           delay: TimeInterval) -> SKAction {
-            let fall = SKAction.move(to: destination, duration: duration)
-            fall.timingMode = .easeIn
-            if Persistence.reduceMotion {
-                return .sequence([.wait(forDuration: delay), fall])
-            }
-            return .sequence([
-                .wait(forDuration: delay),
-                fall,
-                .group([.scaleX(to: 1.07, duration: 0.040),
-                        .scaleY(to: 0.91, duration: 0.040)]),
-                .group([.scaleX(to: 1.0, duration: 0.075),
-                        .scaleY(to: 1.0, duration: 0.075)])
-            ])
+        func landingAction(to destination: CGPoint, duration: TimeInterval, delay: TimeInterval) -> SKAction {
+            SignatureMotion.landingAction(to: destination, duration: duration, delay: delay)
         }
 
         for r in 0..<rows {
@@ -1094,6 +896,11 @@ extension GameScene {
                     let distance = abs(r - old.r) + abs(c - old.c)
                     if distance == 0 {
                         existing.position = destination
+                    } else if transfers.contains(where: { $0.pieceID == cell.id }) {
+                        let duration = worldEffects.travelThroughPortals(transfers.filter { $0.pieceID == cell.id },
+                            node: existing, destination: destination, delay: columnDelay)
+                        latestLanding = max(latestLanding, duration)
+                        landingPan = soundPan(at: destination)
                     } else {
                         let duration = fallDuration(rows: distance, isNew: false)
                         existing.run(landingAction(to: destination,
@@ -1107,9 +914,18 @@ extension GameScene {
                 } else {
                     idToNode[cell.id]?.removeFromParent()
                     let node = makeTileNode(for: cell)
-                    let spawnY = size.height / 2 + tileSize * (1.2 + CGFloat(c % 3) * 0.12)
+                    let spawnY = gameplayLayout.board.maxY + tileSize * (1.2 + CGFloat(c % 3) * 0.12)
                     node.position = CGPoint(x: destination.x, y: spawnY)
                     worldNode.addChild(node)
+                    if transfers.contains(where: { $0.pieceID == cell.id }) {
+                        node.position = idToOldPosition[cell.id].map { point(forRow: $0.r, col: $0.c) } ?? destination
+                        let duration = worldEffects.travelThroughPortals(transfers.filter { $0.pieceID == cell.id },
+                            node: node, destination: destination, delay: columnDelay)
+                        newNodes[r][c] = node
+                        latestLanding = max(latestLanding, duration)
+                        landingPan = soundPan(at: destination)
+                        continue
+                    }
 
                     // Stardust trail behind the falling tile — turns the refill
                     // into the "tiles raining in" feel from the references.
@@ -1143,34 +959,16 @@ extension GameScene {
             refreshNode(at: p)
         }
 
-        run(.wait(forDuration: latestLanding + (Persistence.reduceMotion ? 0.02 : 0.10))) { [weak self] in
-            guard let self else { return }
+        scheduleBoardResolution(after: latestLanding + (SignatureMotion.isReduced ? 0.02 : SignatureMotion.landingSettleDuration + 0.02)) { scene in
             Audio.shared.play(.landing, pan: landingPan)
             Effects.haptic(.soft, intensity: 0.24)
-            self.resolveCascade()
+            scene.resolveCascade()
         }
     }
 
     func animateBoardMechanicsTick() {
-        for pair in levelConfig.layout.portalPairs {
-            for pos in [pair.from, pair.to] where pos.r >= 0 && pos.r < rows && pos.c >= 0 && pos.c < cols {
-                let ring = SKShapeNode(circleOfRadius: tileSize * 0.38)
-                ring.fillColor = UIColor(hex: "#A78BFA").withAlphaComponent(0.16)
-                ring.strokeColor = UIColor(hex: "#22D3EE")
-                ring.lineWidth = 2
-                ring.glowWidth = 6
-                ring.position = point(forRow: pos.r, col: pos.c)
-                ring.zPosition = 820
-                worldNode.addChild(ring)
-                ring.run(.sequence([
-                    .group([.scale(to: 1.55, duration: 0.28),
-                            .fadeOut(withDuration: 0.28)]),
-                    .removeFromParent()
-                ]))
-            }
-        }
-        if !levelConfig.layout.portalPairs.isEmpty { Audio.shared.play(.portal) }
-
+        // Portal cues are emitted only for actual engine-recorded transfers.
+        guard !SignatureMotion.isReduced else { return }
         for belt in levelConfig.layout.conveyorBelts where belt.row >= 0 && belt.row < rows {
             let y = point(forRow: belt.row, col: 0).y
             let sweep = SKShapeNode(rectOf: CGSize(width: tileSize * CGFloat(cols), height: tileSize * 0.18),

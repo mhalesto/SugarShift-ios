@@ -42,6 +42,8 @@ extension LevelMapScene {
                 break
             case .visualAccessibilityChanged:
                 self.reloadProgress(animated: false)
+            case .gameplayAppearanceChanged:
+                break
             case .showCombos:
                 break
             }

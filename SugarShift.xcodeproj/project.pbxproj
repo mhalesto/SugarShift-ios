@@ -522,7 +522,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = SugarShift/SugarShift.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -536,7 +536,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.currenttech.SugarShift;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -556,7 +556,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = SugarShift/SugarShift.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -570,7 +570,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.currenttech.SugarShift;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -591,11 +591,11 @@
 				CODE_SIGNING_REQUIRED = YES;
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.currenttech.SugarShiftTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -616,11 +616,11 @@
 				CODE_SIGNING_REQUIRED = YES;
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.currenttech.SugarShiftTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -640,10 +640,10 @@
 				CODE_SIGNING_REQUIRED = YES;
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.currenttech.SugarShiftUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -663,10 +663,10 @@
 				CODE_SIGNING_REQUIRED = YES;
 				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.currenttech.SugarShiftUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -684,7 +684,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = SugarShiftWidgets/SugarShiftWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SugarShiftWidgets/Info.plist;
@@ -696,7 +696,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.currenttech.SugarShift.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -711,7 +711,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = SugarShiftWidgets/SugarShiftWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = B98QD8MH9U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SugarShiftWidgets/Info.plist;
@@ -723,7 +723,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.currenttech.SugarShift.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

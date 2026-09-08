@@ -32,6 +32,7 @@ final class HomeViewController: UIViewController {
         scene.scaleMode = .resizeFill
         scene.backgroundColor = .clear
         scene.onPlay = { [weak self] in self?.openLevelMap() }
+        scene.onOpeningFinished = { [weak self] in self?.openLevelMap(startOpeningLevel: true) }
         sk.presentScene(scene)
         self.scene = scene
 
@@ -75,11 +76,14 @@ final class HomeViewController: UIViewController {
 
     // MARK: - Navigation
 
-    private func openLevelMap() {
+    private func openLevelMap(startOpeningLevel: Bool = false) {
+        guard presentedViewController == nil else { return }
         let map = LevelMapViewController()
         map.modalTransitionStyle = .crossDissolve
         map.modalPresentationStyle = .fullScreen
-        present(map, animated: true)
+        present(map, animated: true) {
+            if startOpeningLevel { map.startOpeningLevelIfEligible() }
+        }
     }
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }

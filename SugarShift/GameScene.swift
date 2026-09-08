@@ -1120,12 +1120,17 @@ final class GameScene: SKScene {
         var transform = CGAffineTransform(translationX: -mat.position.x, y: -mat.position.y)
         let path = boardContourPath.copy(using: &transform)!
         let rim = worldTheme.boardRimColor
+        let fill = SKShapeNode(path: path)
+        fill.fillColor = UIColor(hex: "#122C4D")
+        fill.strokeColor = .clear
+        fill.zPosition = -1
+        mat.addChild(fill)
         for (width, color, glow) in [(CGFloat(8), rim.withAlphaComponent(0.38), CGFloat(3)),
                                       (CGFloat(5), rim, CGFloat(0)),
                                       (CGFloat(2.5), UIColor(hex: worldTheme.id == "ice" ? "#ECFEFF" : "#FFF1CE"), CGFloat(0)),
                                       (CGFloat(0.7), rim.darker(by: 0.15), CGFloat(0))] {
             let edge = SKShapeNode(path: path)
-            edge.fillColor = UIColor(hex: "#122C4D")
+            edge.fillColor = .clear
             edge.strokeColor = color
             edge.lineWidth = width
             edge.glowWidth = glow

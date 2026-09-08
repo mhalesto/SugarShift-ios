@@ -78,7 +78,7 @@ extension GameScene {
         card.zPosition = 50
         let background = SKNode()
         background.name = "levelCardBackground"
-        background.zPosition = -1
+        background.zPosition = -2
         background.alpha = CGFloat(1 - Persistence.levelCardTransparency)
         background.addChild(GameplayHUDArt.card(size: layout.levelCard.size, ice: ice, theme: worldTheme))
         card.addChild(background)
@@ -125,6 +125,7 @@ extension GameScene {
         let goalW = dividerX - left - 7 * s
         let strip = SKShapeNode(rectOf: CGSize(width: goalW + 9 * s, height: 43 * s), cornerRadius: 12 * s)
         strip.name = "objectiveStrip"
+        strip.zPosition = 1
         strip.position = CGPoint(x: left + goalW / 2 - 2 * s, y: -10 * s)
         strip.fillColor = UIColor.white.withAlphaComponent(0.30)
         strip.strokeColor = .clear
@@ -164,6 +165,7 @@ extension GameScene {
         divider.position = CGPoint(x: dividerX, y: 14 * s)
         divider.fillColor = UIColor(hex: ice ? "#6EC3EA" : "#E5A395").withAlphaComponent(0.6)
         divider.strokeColor = .clear
+        divider.zPosition = 1
         background.addChild(divider)
         let moves = SKNode()
         moves.name = "movesInset"
@@ -218,6 +220,7 @@ extension GameScene {
             let glint = SKShapeNode(path: UIBezierPath(ovalIn: CGRect(x: -radius / 3, y: -radius, width: radius * 2 / 3, height: radius * 2)).cgPath)
             glint.fillColor = UIColor.white.withAlphaComponent(0.85)
             glint.strokeColor = .clear
+            glint.zPosition = 1
             glint.position = CGPoint(x: x, y: y)
             background.addChild(glint)
             let cross = glint.copy() as! SKShapeNode

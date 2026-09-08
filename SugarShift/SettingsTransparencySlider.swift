@@ -35,7 +35,6 @@ final class SettingsTransparencySlider: SKNode, UIAccessibilityIdentification {
     static let rowHeight: CGFloat = 88
     var onChange: (() -> Void)?
     private let surface: Surface
-    private let rowWidth: CGFloat
     private let trackWidth: CGFloat
     private let trackY: CGFloat = -21
     private var value: Double
@@ -45,7 +44,6 @@ final class SettingsTransparencySlider: SKNode, UIAccessibilityIdentification {
 
     init(surface: Surface, width: CGFloat) {
         self.surface = surface
-        rowWidth = width
         trackWidth = width - 44
         value = surface.storedValue
         super.init()
@@ -109,7 +107,8 @@ final class SettingsTransparencySlider: SKNode, UIAccessibilityIdentification {
     required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func acceptsTouch(at localPoint: CGPoint) -> Bool {
-        CGRect(x: -rowWidth / 2, y: -Self.rowHeight / 2, width: rowWidth, height: 44).contains(localPoint)
+        CGRect(x: -trackWidth / 2 - 12, y: -Self.rowHeight / 2,
+               width: trackWidth + 24, height: 44).contains(localPoint)
     }
 
     func adjust(at localPoint: CGPoint) {

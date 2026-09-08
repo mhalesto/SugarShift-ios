@@ -1,5 +1,9 @@
 # Sugar Shift redesign implementation plan
 
+## September 8 display-settings checkpoint — version 1.1.0 (12)
+
+Fixed Level Explorer world cards expanding to the background image's intrinsic height. Added independent, persisted Board transparency and Level card transparency sliders in Settings, affecting background surfaces while preserving fruit, blockers, objectives, moves and score. Slider drags apply live without rebuilding the game or footer. Updated all eight target configurations to marketing version 1.1.0 and build 12. The user requested commit/push and continued to prohibit builds and simulators. See [display settings delivery](DISPLAY_SETTINGS_DELIVERY.md) for source checks and device checks.
+
 ## September 7 world-motion/story checkpoint — build 11
 
 Continued the interrupted material/event and story files; connected real clears, objective flights, special creation, combo stages and portal transfers. Added the working opening/replay and avatar save foundation. All brown praise panels were replaced with small text above the board, omitted where space is insufficient. Fixed the reported set/array assignment errors and raised all eight target configurations to build 11. **No builds, tests requiring compilation, simulators or screenshots were run by this pass**, following the latest user instruction. Source checks and remaining user QA are recorded in [the current delivery note](WORLD_ANIMATION_STORY_DELIVERY.md). The footer and gameplay geometry remain protected.

@@ -567,12 +567,12 @@ final class SettingsCard: SKNode {
         isDraggingTransparency = false
 
         let local = self.convert(scenePoint, from: self.parent ?? self)
-        if isPointInScrollViewport(local), !isPointNearScrollIndicator(local) {
+        if isPointInScrollViewport(local) {
             pendingTransparencySlider = transparencySlider(at: scenePoint)
         }
         isTrackingScroll = maxScrollOffset > 0 && isPointInScrollViewport(local)
         if isTrackingScroll {
-            scrollDragMode = isPointNearScrollIndicator(local) ? .indicator : .content
+            scrollDragMode = pendingTransparencySlider == nil && isPointNearScrollIndicator(local) ? .indicator : .content
             highlightScroller(active: true)
         }
         return true
